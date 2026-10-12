@@ -3,9 +3,9 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Check, Heart, Languages, Play, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast, toastError, useEvent, useLoad, useThrottled } from "../lib/store";
-import { chapterTranslationBadge, shortTitles } from "../lib/util";
+import { chapterTranslationBadge, publicationStatus, shortTitles } from "../lib/util";
 import { Cover, Empty, ErrorBox, Field, Modal } from "../components/ui";
-import { TranslateDialog } from "../components/TranslateDialog";
+import { TranslateFlow } from "../components/TranslateFlow";
 import type { ChapterInfo, GlossaryEntry, MangaDetail } from "../lib/types";
 
 export default function MangaPage() {
@@ -15,6 +15,7 @@ export default function MangaPage() {
   const [tab, setTab] = useState<"chapters" | "glossary" | "memory" | "options">("chapters");
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [translate, setTranslate] = useState<number[] | null>(null);
+  const [flowOpen, setFlowOpen] = useState(false);
   const refresh = useThrottled(reload, 1000);
   useEvent<{ chapter_id: number }>("page-updated", (p) => {
     if (m?.chapters.some((c) => c.id === p.chapter_id)) refresh();
@@ -63,19 +64,20 @@ export default function MangaPage() {
             {m.artist && m.artist !== m.author && <span dir="auto">איור: {m.artist}</span>}
             <span>{m.chapters.length} פרקים</span>
             <span>{m.source_kind === "source" ? "הורד ממקור" : "יובא מהמחשב"}</span>
-            {m.status && <span>{m.status}</span>}
+            {publicationStatus(m.status) && <span>{publicationStatus(m.status)}</span>}
           </div>
           {m.genres.length > 0 && <div className="row wrap">{m.genres.map((g) => <span key={g} className="badge" dir="auto">{g}</span>)}</div>}
           {m.description ? <p className="muted" dir="auto" style={{ maxWidth: 760 }}>{m.description}</p> : null}
+          <TranslationSummary m={m} />
           <div className="row wrap" style={{ marginTop: 6 }}>
+            <button className="btn primary" onClick={() => setFlowOpen(true)} disabled={!m.chapters.length}>
+              <Languages size={16} /> תרגם לעברית
+            </button>
             {target && (
-              <button className="btn primary" onClick={() => nav(`/read/${target.id}?page=${target.read ? 0 : target.last_page}`)}>
-                <Play size={16} /> {resume ? "המשך לקרוא" : "התחל לקרוא"}
+              <button className="btn" onClick={() => nav(`/read/${target.id}?page=${target.read ? 0 : target.last_page}`)}>
+                <Play size={16} /> {resume ? "המשך קריאה" : "קריאה עכשיו"}
               </button>
             )}
-            <button className="btn" onClick={() => setTranslate(m.chapters.map((c) => c.id))} disabled={!m.chapters.length}>
-              <Languages size={16} /> תרגום כל הפרקים
-            </button>
             <button className="btn" onClick={toggleFav} aria-pressed={m.favorite}>
               <Heart size={16} fill={m.favorite ? "currentColor" : "none"} /> {m.favorite ? "במועדפים" : "הוסף למועדפים"}
             </button>
@@ -100,7 +102,8 @@ export default function MangaPage() {
         {tab === "options" && <Options m={m} onSaved={reload} />}
       </div>
 
-      {translate && <TranslateDialog chapterIds={translate} onClose={() => setTranslate(null)} onQueued={() => setSel(new Set())} />}
+      {translate && <TranslateFlow chapters={m.chapters} preselect={translate} onClose={() => { setTranslate(null); setSel(new Set()); }} />}
+      {flowOpen && <TranslateFlow chapters={m.chapters} onClose={() => setFlowOpen(false)} />}
     </div>
   );
 }
@@ -364,6 +367,25 @@ function Options({ m, onSaved }: { m: MangaDetail; onSaved: () => void }) {
           <p className="muted">אי אפשר לבטל את הפעולה.</p>
         </Modal>
       )}
+    </div>
+  );
+}
+
+/** Honest summary of translation state across chapters (partial results shown as partial). */
+function TranslationSummary({ m }: { m: MangaDetail }) {
+  const pages = m.chapters.reduce((s, c) => s + c.page_count, 0);
+  const done = m.chapters.reduce((s, c) => s + c.translation.done, 0);
+  const failed = m.chapters.reduce((s, c) => s + c.translation.failed, 0);
+  const fullChapters = m.chapters.filter((c) => c.page_count > 0 && c.translation.done === c.page_count).length;
+  const read = m.chapters.filter((c) => c.read).length;
+  if (!m.chapters.length) return null;
+  return (
+    <div className="row wrap small" style={{ gap: 14 }}>
+      <span className="muted">קריאה: {read}/{m.chapters.length} פרקים</span>
+      <span className="muted">
+        עברית: {done === 0 ? "עוד לא תורגם" : `${fullChapters} פרקים מלאים · ${done}/${pages} עמודים`}
+      </span>
+      {failed > 0 && <span style={{ color: "var(--bad)" }}>{failed} עמודים נכשלו (אפשר לנסות שוב מהקורא או מתור התרגום)</span>}
     </div>
   );
 }

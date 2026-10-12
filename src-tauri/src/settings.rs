@@ -227,15 +227,20 @@ pub struct SourceSettings {
     pub suwayomi_url: String,
     pub suwayomi_user: String,
     pub download_concurrency: u32,
+    /// The app installed Suwayomi itself and starts/stops it.
+    pub managed: bool,
+    pub managed_port: u16,
 }
 
 impl Default for SourceSettings {
     fn default() -> Self {
         Self {
-            suwayomi_enabled: false,
+            suwayomi_enabled: true,
             suwayomi_url: "http://127.0.0.1:4567".into(),
             suwayomi_user: String::new(),
             download_concurrency: 2,
+            managed: false,
+            managed_port: 4567,
         }
     }
 }
@@ -253,6 +258,8 @@ pub struct AppSettings {
     pub sources: SourceSettings,
     /// User acknowledged that cloud translation sends data to the provider.
     pub cloud_notice_accepted: bool,
+    /// The first-run welcome was shown (or dismissed).
+    pub onboarding_done: bool,
 }
 
 impl Default for AppSettings {
@@ -266,6 +273,7 @@ impl Default for AppSettings {
             ocr: OcrSettings::default(),
             sources: SourceSettings::default(),
             cloud_notice_accepted: false,
+            onboarding_done: false,
         }
     }
 }

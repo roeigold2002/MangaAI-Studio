@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Category, ChapterView, Download, EditorPage, EngineStatus, Estimate, GlossaryEntry, HistoryEntry, HomeData, ImportReport,
   Job, MangaDetail, MangaSummary, MemoryEntry, PageState, Region, RemoteChapter, RemoteDetail, RemoteManga, Settings, SourceInfo,
+  SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus,
 } from "./types";
 
 export const api = {
@@ -76,6 +77,23 @@ export const api = {
   downloadAction: (id: number, action: "cancel" | "retry") => invoke<void>("download_action", { id, action }),
   clearFinishedDownloads: () => invoke<number>("clear_finished_downloads"),
   setSourcePassword: (password: string) => invoke<void>("set_source_password", { password }),
+  // discovery
+  sourceOverview: () => invoke<SourceOverview>("source_overview"),
+  setupSources: () => invoke<SourceOverview>("setup_sources"),
+  startSources: () => invoke<SourceOverview>("start_sources"),
+  stopSources: () => invoke<void>("stop_sources"),
+  searchAll: (query: string, generation: number) => invoke<SearchOutcome>("search_all", { query, generation }),
+  remoteChapterCount: (mangaRef: string) => invoke<number>("remote_chapter_count", { mangaRef }),
+  stores: () => invoke<ExtensionStore[]>("list_stores"),
+  addStore: (url: string) => invoke<ExtensionStore>("add_store", { url }),
+  validateStoreUrl: (url: string) => invoke<string>("validate_store_url", { url }),
+  removeStore: (indexUrl: string) => invoke<void>("remove_store", { indexUrl }),
+  extensions: (refresh: boolean) => invoke<Extension[]>("list_extensions", { refresh }),
+  changeExtension: (pkgName: string, action: "install" | "uninstall" | "update") =>
+    invoke<{ extension: Extension; sources: number; online_sources: number }>("change_extension", { pkgName, action }),
+  downloadNow: (manga: RemoteManga, chapter: RemoteChapter) => invoke<number>("download_now", { manga, chapter }),
+  downloadSizeHint: () => invoke<number | null>("download_size_hint"),
+  providerStatus: () => invoke<ProviderStatus>("provider_status"),
   // data
   appPaths: () => invoke<{ data: string; library: string; logs: string }>("app_paths"),
   cacheSize: () => invoke<{ derived: number; thumbs: number; library: number }>("cache_size"),

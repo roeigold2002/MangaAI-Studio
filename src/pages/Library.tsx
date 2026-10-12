@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Heart, LayoutGrid, List, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
 import { toastError, useApp, useLoad } from "../lib/store";
@@ -9,16 +9,21 @@ import { ImportButtons } from "../components/ImportButton";
 import type { MangaSummary } from "../lib/types";
 
 type Sort = "title" | "recent_read" | "added" | "unread";
-type Filter = "all" | "unread" | "translated" | "downloaded" | "local";
+type Tab = "all" | "reading" | "recent" | "downloaded" | "translated" | "favorites";
+const TABS: [Tab, string][] = [
+  ["all", "הכול"], ["reading", "קורא עכשיו"], ["recent", "נוספו לאחרונה"], ["downloaded", "הורדו"], ["translated", "תורגמו"], ["favorites", "מועדפים"],
+];
 
-export default function LibraryPage({ favorites = false }: { favorites?: boolean }) {
+export default function LibraryPage() {
   const nav = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("tab") as Tab) || "all";
+  const favorites = tab === "favorites";
   const { settings, saveSettings } = useApp();
   const { data, error, reload } = useLoad(() => api.listManga(), []);
   const cats = useLoad(() => api.categories(), []);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<Sort>("recent_read");
-  const [filter, setFilter] = useState<Filter>("all");
   const [cat, setCat] = useState<number | null>(null);
   const [newCat, setNewCat] = useState<string | null>(null);
   const view = settings?.library_view === "list" ? "list" : "grid";
@@ -31,18 +36,21 @@ export default function LibraryPage({ favorites = false }: { favorites?: boolean
       const s = q.trim().toLowerCase();
       list = list.filter((m) => m.title.toLowerCase().includes(s));
     }
-    if (filter === "unread") list = list.filter((m) => m.read_count < m.chapter_count);
-    if (filter === "translated") list = list.filter((m) => m.translated_chapters > 0);
-    if (filter === "downloaded") list = list.filter((m) => m.source_kind === "source");
-    if (filter === "local") list = list.filter((m) => m.source_kind === "local");
+    if (tab === "reading") list = list.filter((m) => m.last_read_at && m.read_count < m.chapter_count);
+    if (tab === "downloaded") list = list.filter((m) => m.downloaded_chapters > 0);
+    if (tab === "translated") list = list.filter((m) => m.translated_pages > 0);
+    if (tab === "recent") {
+      const week = Date.now() - 14 * 86400000;
+      list = list.filter((m) => new Date(m.created_at).getTime() > week);
+    }
     const by = {
       title: (a: MangaSummary, b: MangaSummary) => a.title.localeCompare(b.title, undefined, { numeric: true }),
       recent_read: (a: MangaSummary, b: MangaSummary) => (b.last_read_at ?? "").localeCompare(a.last_read_at ?? "") || a.title.localeCompare(b.title),
       added: (a: MangaSummary, b: MangaSummary) => b.created_at.localeCompare(a.created_at),
       unread: (a: MangaSummary, b: MangaSummary) => (b.chapter_count - b.read_count) - (a.chapter_count - a.read_count),
     }[sort];
-    return [...list].sort(by);
-  }, [data, favorites, cat, q, filter, sort]);
+    return [...list].sort(tab === "recent" ? (a, b) => b.created_at.localeCompare(a.created_at) : by);
+  }, [data, favorites, cat, q, tab, sort]);
 
   async function setView(v: "grid" | "list") {
     if (settings) await saveSettings({ ...settings, library_view: v }).catch(toastError);
@@ -63,10 +71,16 @@ export default function LibraryPage({ favorites = false }: { favorites?: boolean
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>{favorites ? "מועדפים" : "ספרייה"}</h1>
+          <h1>הספרייה שלי</h1>
           <p className="muted">{items.length} כותרים</p>
         </div>
-        {!favorites && <ImportButtons onDone={reload} />}
+        <ImportButtons onDone={reload} />
+      </div>
+
+      <div className="tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setParams(k === "all" ? {} : { tab: k })}>{label}</button>
+        ))}
       </div>
 
       <div className="row wrap" style={{ marginBottom: 14 }}>
@@ -74,13 +88,6 @@ export default function LibraryPage({ favorites = false }: { favorites?: boolean
           <Search size={16} />
           <input className="input" placeholder="חיפוש לפי שם" value={q} onChange={(e) => setQ(e.target.value)} aria-label="חיפוש" />
         </div>
-        <select className="select" style={{ width: 170 }} value={filter} onChange={(e) => setFilter(e.target.value as Filter)} aria-label="סינון">
-          <option value="all">הכול</option>
-          <option value="unread">עם פרקים שלא נקראו</option>
-          <option value="translated">עם פרקים מתורגמים</option>
-          <option value="downloaded">הורדו ממקור</option>
-          <option value="local">יובאו מהמחשב</option>
-        </select>
         <select className="select" style={{ width: 170 }} value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="מיון">
           <option value="recent_read">נקרא לאחרונה</option>
           <option value="title">שם</option>
@@ -117,7 +124,9 @@ export default function LibraryPage({ favorites = false }: { favorites?: boolean
         favorites ? (
           <Empty title="אין מועדפים" icon={<Heart size={30} strokeWidth={1.5} />}>סמן מנגה כמועדפת מדף הפרטים שלה.</Empty>
         ) : data.length === 0 ? (
-          <Empty title="הספרייה ריקה">ייבא תיקייה, CBZ או ZIP, או הורד פרקים מעיון במקורות.</Empty>
+          <Empty title="הספרייה ריקה" action={<button className="btn primary" onClick={() => nav("/search")}>חיפוש מנגה</button>}>
+            מנגה שתוריד תופיע כאן אוטומטית. אפשר גם לייבא תיקייה, CBZ או ZIP מהמחשב.
+          </Empty>
         ) : (
           <Empty title="אין תוצאות">נסה חיפוש או סינון אחר.</Empty>
         )

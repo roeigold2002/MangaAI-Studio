@@ -6,7 +6,8 @@ export interface MangaSummary {
   id: number; title: string; favorite: boolean; source_kind: string;
   chapter_count: number; read_count: number; page_total: number; translated_chapters: number;
   last_read_at: string | null; created_at: string; updated_at: string; categories: number[];
-  continue_chapter_id: number | null;
+  continue_chapter_id: number | null; continue_page: number | null;
+  downloaded_chapters: number; translated_pages: number; failed_pages: number;
 }
 
 export interface TranslationCounts { total: number; done: number; failed: number; in_progress: number }
@@ -60,8 +61,10 @@ export interface Settings {
   render: { font: string; font_loud: string; min_font_px: number; max_font_px: number; padding: number; line_spacing: number;
     stroke_px: number; inpaint: string };
   ocr: { detector_threshold: number; device: string };
-  sources: { suwayomi_enabled: boolean; suwayomi_url: string; suwayomi_user: string; download_concurrency: number };
+  sources: { suwayomi_enabled: boolean; suwayomi_url: string; suwayomi_user: string; download_concurrency: number;
+    managed: boolean; managed_port: number };
   cloud_notice_accepted: boolean;
+  onboarding_done: boolean;
 }
 
 export interface Job {
@@ -125,7 +128,9 @@ export interface RemoteManga {
 export interface RemoteChapter {
   chapter_ref: string; title: string; number: number | null; scanlator: string | null; upload_date: number | null; page_count: number | null;
 }
-export interface RemoteDetail { manga: RemoteManga; chapters: RemoteChapter[]; downloads: Record<string, string>; local_manga_id: number | null }
+export interface RemoteDetail {
+  manga: RemoteManga; chapters: RemoteChapter[]; downloads: Record<string, string>; local_chapters: Record<string, number>; local_manga_id: number | null;
+}
 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;
@@ -133,3 +138,25 @@ export interface EngineStatus {
     models: { detector: boolean; ocr: boolean; lama: boolean; lama_path: string } } | null;
   error: string | null;
 }
+
+export interface SearchEntry { source_id: string; source_name: string; lang: string; manga: RemoteManga }
+export interface SearchGroup { title: string; author: string | null; thumbnail_url: string | null; description: string | null; entries: SearchEntry[] }
+export interface SearchOutcome {
+  groups: SearchGroup[]; sources_searched: number; online_sources: number;
+  failures: { source_name: string; message: string }[]; cancelled: boolean;
+}
+export interface SourceHealth {
+  server: "ok" | "offline" | "auth" | "disabled" | "error"; server_version: string | null; message: string | null;
+  sources: number; online_sources: number; stores: number; installed_extensions: number;
+}
+export interface RuntimeStatus { supported: boolean; installed: boolean; running: boolean; version: string; install_dir: string; download_size_mb: number | null }
+export interface SourceOverview {
+  enabled: boolean; url: string; managed: boolean; runtime: RuntimeStatus; runtime_error: string | null;
+  health: SourceHealth | null; local_dir: string | null;
+}
+export interface ExtensionStore { name: string; index_url: string; is_legacy: boolean; badge_label: string; contact_website: string }
+export interface Extension {
+  pkg_name: string; name: string; lang: string; version_name: string; is_installed: boolean; has_update: boolean;
+  is_obsolete: boolean; is_nsfw: boolean; store_index_url: string | null; icon_url: string | null;
+}
+export interface ProviderStatus { ready: boolean; provider_id: string; label: string; kind: string; local: boolean; missing: string[] }

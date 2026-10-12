@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: () => "mangaimg://localhost/" }));
 
-import { arrowStep, chapterTranslationBadge, imgUrl, shortTitles, spreads, usd } from "./util";
+import { arrowStep, chapterTranslationBadge, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
 
 const p = (w = 100, h = 140) => ({ width: w, height: h });
 
@@ -50,5 +50,13 @@ describe("shortTitles", () => {
   it("keeps titles that share nothing meaningful", () => {
     expect(shortTitles(["Ch 1", "Ch 2"])).toEqual(["Ch 1", "Ch 2"]);
     expect(shortTitles(["One"])).toEqual(["One"]);
+  });
+});
+
+describe("publicationStatus", () => {
+  it("translates known values and hides unknown", () => {
+    expect(publicationStatus("ONGOING")).toBe("בהמשכים");
+    expect(publicationStatus("UNKNOWN")).toBe("");
+    expect(publicationStatus(null)).toBe("");
   });
 });

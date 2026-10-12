@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod catalog;
 pub mod commands;
 #[cfg(all(target_os = "macos", feature = "dev-snapshot"))]
 mod devsnap;
@@ -11,6 +12,7 @@ pub mod library;
 pub mod pipeline;
 pub mod protocol;
 pub mod providers;
+pub mod runtime;
 pub mod secrets;
 pub mod settings;
 pub mod sources;
@@ -152,19 +154,65 @@ pub fn run() {
             });
             tauri::async_runtime::spawn(dl.run_forever(concurrency));
 
-            app.manage(AppState { db, paths, engine, worker: vision, secrets, job_notify, dl_notify, resource_dir });
+            let runtime = Arc::new(runtime::Runtime::new(&root, paths.logs_dir().join("suwayomi.log")));
+            // Start the app-managed Suwayomi in the background (a user-run server is left alone).
+            if let Ok(s) = settings::load(&db) {
+                if s.sources.managed && s.sources.suwayomi_enabled && runtime.is_installed() {
+                    let (r, url, port) = (runtime.clone(), s.sources.suwayomi_url.clone(), s.sources.managed_port);
+                    tauri::async_runtime::spawn(async move {
+                        let reachable = match sources::Suwayomi::new(&url, None) {
+                            Ok(sw) => sources::SourceAdapter::ping(&sw).await.is_ok(),
+                            Err(_) => false,
+                        };
+                        if !reachable {
+                            if let Err(e) = r.start(port).await {
+                                tracing::warn!("managed Suwayomi not started: {}", e.message);
+                            }
+                        }
+                    });
+                }
+            }
+            #[cfg(unix)]
+            {
+                let (r, w, handle) = (runtime.clone(), vision.clone(), app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else { return };
+                    tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+                    w.shutdown().await;
+                    r.stop().await;
+                    handle.exit(0);
+                });
+            }
+            let search_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            app.manage(AppState { runtime, search_gen, db, paths, engine, worker: vision, secrets, job_notify, dl_notify, resource_dir });
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let st = window.state::<AppState>();
-                let w = st.worker.clone();
-                tauri::async_runtime::block_on(async move { w.shutdown().await });
+                let (w, r) = (st.worker.clone(), st.runtime.clone());
+                tauri::async_runtime::block_on(async move {
+                    w.shutdown().await;
+                    r.stop().await;
+                });
             }
         })
         .invoke_handler(handlers())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Quit from the menu / Cmd+Q / last window: stop the worker and the managed server.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(st) = app.try_state::<AppState>() {
+                    let (w, r) = (st.worker.clone(), st.runtime.clone());
+                    tauri::async_runtime::block_on(async move {
+                        w.shutdown().await;
+                        r.stop().await;
+                    });
+                }
+            }
+        });
 }
 
 macro_rules! app_handlers {
@@ -233,6 +281,22 @@ macro_rules! app_handlers {
             commands::clear_thumbnails,
             commands::export_data,
             commands::dev_start_route,
+            commands::dev_log,
+            commands::source_overview,
+            commands::setup_sources,
+            commands::start_sources,
+            commands::stop_sources,
+            commands::search_all,
+            commands::remote_chapter_count,
+            commands::list_stores,
+            commands::add_store,
+            commands::validate_store_url,
+            commands::remove_store,
+            commands::list_extensions,
+            commands::change_extension,
+            commands::download_now,
+            commands::download_size_hint,
+            commands::provider_status,
         ]
     };
 }

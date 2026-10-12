@@ -214,6 +214,10 @@ CREATE TABLE download (
     UNIQUE (source_id, chapter_ref)
 );
 "#,
+    // 2: download priority ("read now" jumps the queue)
+    r#"
+ALTER TABLE download ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

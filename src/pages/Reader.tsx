@@ -2,13 +2,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  ArrowRight, Columns2, Expand, GalleryVerticalEnd, Languages, LayoutPanelLeft, Maximize, PenLine, RectangleVertical, ZoomIn, ZoomOut,
+  ArrowRight, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Columns2, Expand, GalleryVerticalEnd, Languages, LayoutPanelLeft,
+  Maximize, PenLine, RectangleVertical, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast, toastError, useApp, useEvent, useLoad, useThrottled } from "../lib/store";
 import { arrowStep, pageUrl, spreads, statusLabel, thumbUrl, translatedUrl } from "../lib/util";
-import { TranslateDialog } from "../components/TranslateDialog";
-import type { ChapterView, PageInfo } from "../lib/types";
+import { TranslateFlow } from "../components/TranslateFlow";
+import { Progress } from "../components/ui";
+import type { ChapterView, Job, PageInfo } from "../lib/types";
 
 type Mode = "single" | "double" | "vertical";
 type Dir = "rtl" | "ltr";
@@ -33,6 +35,19 @@ export default function ReaderPage() {
   const { data: view, reload } = useLoad(() => api.chapterView(chapterId), [chapterId]);
   const refresh = useThrottled(reload, 600);
   useEvent<{ chapter_id: number }>("page-updated", (p) => p.chapter_id === chapterId && refresh());
+  // translation job for this chapter, shown inside the reader
+  const [job, setJob] = useState<Job | null>(null);
+  const [bannerHidden, setBannerHidden] = useState(false);
+  useEffect(() => {
+    setJob(null);
+    setBannerHidden(false);
+    api.jobs(false).then((js) => setJob(js.find((j) => j.chapter_id === chapterId && ["queued", "running", "paused"].includes(j.status)) ?? null)).catch(() => {});
+  }, [chapterId]);
+  useEvent<Job>("job-updated", (j) => {
+    if (j.chapter_id !== chapterId) return;
+    setJob(["queued", "running", "paused"].includes(j.status) ? j : null);
+    refresh();
+  });
 
   const rs = settings!.reader;
   const [mode, setMode] = useState<Mode>(rs.mode);
@@ -215,6 +230,11 @@ export default function ReaderPage() {
         <div className="grow ellipsis" dir="auto" data-tauri-drag-region>
           <strong>{view.manga_title}</strong> <span className="muted">· {view.chapter.title}</span>
         </div>
+        {page && (
+          <span className={`version-tag ${translated && page.translated_version ? "he" : ""}`} aria-live="polite">
+            {translated && page.translated_version ? "מוצג: עברית" : translated ? "מוצג: מקור (העמוד עוד לא תורגם)" : "מוצג: מקור"}
+          </span>
+        )}
         <div className="row" style={{ gap: 6 }}>
           <button className={`btn sm ${translated ? "on" : ""}`} onClick={toggleTranslated} title="מקור / מתורגם (T)" aria-pressed={translated}>
             <Languages size={15} /> {translated ? "מתורגם" : "מקור"}
@@ -240,6 +260,18 @@ export default function ReaderPage() {
           <button className="btn icon sm" onClick={toggleFullscreen} title="מסך מלא (F)" aria-label="מסך מלא"><Maximize size={15} /></button>
         </div>
       </div>
+
+      <TranslationBanner
+        view={view} job={job} hidden={bannerHidden} chrome={chrome} onHide={() => setBannerHidden(true)}
+        onTranslate={() => setTranslateOpen(true)}
+        onRetry={async () => {
+          try {
+            await api.enqueue([chapterId], { priority: 50 });
+            await api.prioritizeChapter(chapterId);
+            toast("העמודים שחסרים נכנסו לתרגום", "ok");
+          } catch (e) { toastError(e); }
+        }}
+      />
 
       {page && page.status !== "done" && page.status !== "none" && chrome && (
         <div className="page-status">
@@ -280,6 +312,14 @@ export default function ReaderPage() {
           </div>
         )}
         <div className="row">
+          <button className="btn icon sm" disabled={!view.prev_chapter_id} onClick={() => nav(`/read/${view.prev_chapter_id}?page=0`, { replace: true })}
+            title="הפרק הקודם" aria-label="הפרק הקודם">{dir === "rtl" ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}</button>
+          <button className="btn icon sm" onClick={() => go(-1)} title="העמוד הקודם" aria-label="העמוד הקודם">
+            {dir === "rtl" ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}</button>
+          <button className="btn icon sm" onClick={() => go(1)} title="העמוד הבא" aria-label="העמוד הבא">
+            {dir === "rtl" ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
+          <button className="btn icon sm" disabled={!view.next_chapter_id} onClick={() => nav(`/read/${view.next_chapter_id}?page=0`, { replace: true })}
+            title="הפרק הבא" aria-label="הפרק הבא">{dir === "rtl" ? <ChevronsLeft size={15} /> : <ChevronsRight size={15} />}</button>
           <bdi className="muted small nowrap" dir="ltr">
             {group.length > 1 ? `${group[0] + 1}–${group[group.length - 1] + 1}` : idx + 1} / {pages.length}
           </bdi>
@@ -302,8 +342,8 @@ export default function ReaderPage() {
       </div>
 
       {translateOpen && (
-        <TranslateDialog chapterIds={[chapterId]} priority={50} onClose={() => setTranslateOpen(false)}
-          onQueued={() => api.prioritizeChapter(chapterId).catch(() => {})} />
+        <TranslateFlow chapters={[view.chapter]} preselect={[chapterId]}
+          onClose={() => { setTranslateOpen(false); api.prioritizeChapter(chapterId).catch(() => {}); }} />
       )}
     </div>
   );
@@ -361,4 +401,50 @@ function VerticalPages({ view, src, zoom, width, gap, startIdx, onVisible }: {
       ))}
     </div>
   );
+}
+
+/** Translation state of this chapter, right in the reader: start, progress, partial results, retry. */
+function TranslationBanner({ view, job, hidden, chrome, onHide, onTranslate, onRetry }: {
+  view: ChapterView; job: Job | null; hidden: boolean; chrome: boolean; onHide: () => void; onTranslate: () => void; onRetry: () => void;
+}) {
+  const t = view.chapter.translation;
+  const total = view.pages.length;
+  if (job) {
+    return (
+      <div className="reader-banner">
+        <div>
+          <Languages size={16} />
+          <div className="col" style={{ gap: 4, minWidth: 220 }}>
+            <span className="small">{job.status === "queued" ? "ממתין בתור התרגום…" : job.status === "paused" ? "התרגום מושהה" : `מתרגם לעברית… ${job.completed}/${job.total} עמודים`}</span>
+            <Progress value={job.completed + job.failed} total={job.total} />
+          </div>
+          <span className="small muted">אפשר להמשיך לקרוא; עמודים מתורגמים יופיעו לבד</span>
+        </div>
+      </div>
+    );
+  }
+  if (hidden || !chrome) return null;
+  if (t.done === 0 && t.failed === 0) {
+    return (
+      <div className="reader-banner">
+        <div>
+          <span>הפרק הזה עוד לא תורגם.</span>
+          <button className="btn sm on" onClick={onTranslate}><Languages size={14} /> תרגם לעברית</button>
+          <button className="btn icon sm" onClick={onHide} aria-label="הסתרה"><X size={14} /></button>
+        </div>
+      </div>
+    );
+  }
+  if (t.done < total) {
+    return (
+      <div className="reader-banner">
+        <div>
+          <span>{t.done}/{total} עמודים תורגמו{t.failed ? ` · ${t.failed} נכשלו` : ""}.</span>
+          <button className="btn sm on" onClick={onRetry}>{t.failed ? "נסה שוב לשאר העמודים" : "תרגם את השאר"}</button>
+          <button className="btn icon sm" onClick={onHide} aria-label="הסתרה"><X size={14} /></button>
+        </div>
+      </div>
+    );
+  }
+  return null;
 }

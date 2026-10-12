@@ -44,7 +44,9 @@ Upstream evaluation: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md).
 | Pipeline | `src-tauri/src/pipeline/` | Page stages, cache keys, status from real results |
 | Jobs | `src-tauri/src/jobs/` | Persistent queue: pause/resume/cancel/retry/priority/recovery |
 | Vision worker | `worker/mangaai_worker/` | Detection, OCR, inpainting, Hebrew typesetting |
-| Sources | `src-tauri/src/sources/` | `SourceAdapter` trait; Suwayomi implementation |
+| Sources | `src-tauri/src/sources.rs` | `SourceAdapter` trait; Suwayomi GraphQL client |
+| Catalog | `src-tauri/src/catalog.rs` | Search across sources, de-duplication, source health, extension stores and extensions |
+| Managed server | `src-tauri/src/runtime.rs` | One-click install (checksum-verified) and start/stop of Suwayomi on 127.0.0.1 |
 | Downloads | `src-tauri/src/downloads/` | Download queue writing into the local library |
 
 ## Data layout

@@ -67,3 +67,35 @@ ARCHITECTURE.md, docs/DECISIONS.md, docs/UPSTREAM_EVALUATION.md, THIRDPARTYNOTIC
   `mangaai-studio.exe` (PE32+ GUI x86-64) and the test binaries link. Running them needs a Windows host.
 - Not possible on this machine: Apple notarization (requires a paid Developer ID) and Windows testing
   (no Windows host). The code paths are platform-neutral (keyring has Windows support, worker uses `Scripts/python.exe`).
+
+## Phase 9: Beginner discovery flow (Discover → Download → Library → Translate → Read) ☑
+- ☑ Navigation: בית · חיפוש · הספרייה שלי · הורדות · תור תרגום · הגדרות. Technical options live under Settings
+  (tabs: כללי / תרגום / מקורות ותוספים (מתקדם) / נתונים).
+- ☑ Home: search bar first, short first-run welcome (sources / library / provider status), continue reading.
+- ☑ Search across every installed source at once (debounced, cancellable, per-source timeouts and failures,
+  merge only on identical title and author). "No sources" is shown separately from "no results".
+- ☑ Source bootstrap: detect server, managed one-click install of the pinned official Suwayomi release
+  (SHA-256 verified, 127.0.0.1 only, auto start/stop), official store registered, no extension installed
+  without an explicit click, extension stores and extensions managed under Settings.
+- ☑ Result page: read now (first chapter jumps the queue and opens when downloaded), single chapter, all
+  chapters, chapter range, disk estimate from earlier downloads, per-chapter status.
+- ☑ Downloads resume from the last saved page; completion and failure toasts; library insertion is automatic.
+- ☑ "תרגם לעברית": provider readiness check → short setup dialog (only when needed) → chapter choice → estimate.
+- ☑ Reader: shown-version label, translate banner, in-reader job progress, partial results plus retry, page and
+  chapter buttons.
+
+### Verification: real vs mocked
+
+| Step | How it was verified |
+|---|---|
+| First launch, no server | **Real**: fresh data folder, app UI (scripted clicks in the real webview) |
+| One-click engine install and start | **Real**: downloaded the official v2.4.2366 macOS arm64 release, checksum verified, server started by the app |
+| Official store + extension install, sources refresh | **Real**: store registered on setup; "Suwayomi" extension installed through the confirm dialog; online source count 0 → 1 |
+| Search across sources | **Real** with 2 sources (Local source + Suwayomi extension, which fails honestly when not configured); **mock** for 3 sources with duplicates and failures |
+| Result page → download all → library | **Real**: Local source chapter (CC-BY Pepper&Carrot), 4 pages, appeared in הספרייה שלי automatically |
+| Translation setup dialog → translate | **Real**: Claude Code (opus), 4/4 pages, $0.21 reported |
+| Read translated chapter | **Real**: reader showed Hebrew pages |
+| Restart: downloads, translations, progress kept | **Real**: second launch on the same data folder; also a unit test |
+| Managed server stops with the app (quit and SIGTERM) | **Real** |
+| No sources / no results / duplicates / install failure / resume / provider not configured | **Mocks** (wiremock GraphQL, fake sources) |
+| Online manga **websites** | **Not tested**: none are available without a third-party extension store, which the app does not add on its own |

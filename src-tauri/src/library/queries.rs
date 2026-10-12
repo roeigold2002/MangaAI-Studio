@@ -21,6 +21,11 @@ pub struct MangaSummary {
     pub updated_at: String,
     pub categories: Vec<i64>,
     pub continue_chapter_id: Option<i64>,
+    /// Page to resume at in `continue_chapter_id`.
+    pub continue_page: Option<i64>,
+    pub downloaded_chapters: i64,
+    pub translated_pages: i64,
+    pub failed_pages: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,7 +176,13 @@ pub fn list_manga(db: &Db) -> AppResult<Vec<MangaSummary>> {
                     (SELECT count(*) FROM chapter ch WHERE ch.manga_id = m.id AND ch.page_count > 0 AND ch.page_count =
                         (SELECT count(*) FROM page p JOIN page_state st ON st.page_id = p.id
                           WHERE p.chapter_id = ch.id AND st.status = 'done')),
-                    (SELECT id FROM chapter WHERE manga_id = m.id AND last_read_at IS NOT NULL ORDER BY last_read_at DESC LIMIT 1)
+                    (SELECT id FROM chapter WHERE manga_id = m.id AND last_read_at IS NOT NULL ORDER BY last_read_at DESC LIMIT 1),
+                    (SELECT last_page FROM chapter WHERE manga_id = m.id AND last_read_at IS NOT NULL ORDER BY last_read_at DESC LIMIT 1),
+                    (SELECT count(*) FROM chapter WHERE manga_id = m.id AND source_ref IS NOT NULL),
+                    (SELECT count(*) FROM page p JOIN chapter ch ON ch.id = p.chapter_id JOIN page_state st ON st.page_id = p.id
+                       WHERE ch.manga_id = m.id AND st.status = 'done'),
+                    (SELECT count(*) FROM page p JOIN chapter ch ON ch.id = p.chapter_id JOIN page_state st ON st.page_id = p.id
+                       WHERE ch.manga_id = m.id AND st.status = 'failed')
              FROM manga m ORDER BY m.title COLLATE NOCASE",
         )?;
         let rows = s
@@ -189,6 +200,10 @@ pub fn list_manga(db: &Db) -> AppResult<Vec<MangaSummary>> {
                     page_total: r.get(9)?,
                     translated_chapters: r.get(10)?,
                     continue_chapter_id: r.get(11)?,
+                    continue_page: r.get(12)?,
+                    downloaded_chapters: r.get(13)?,
+                    translated_pages: r.get(14)?,
+                    failed_pages: r.get(15)?,
                     categories: vec![],
                 })
             })?

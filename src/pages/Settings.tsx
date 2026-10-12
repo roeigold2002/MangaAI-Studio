@@ -1,22 +1,40 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import TranslationSettingsPage from "./TranslationSettings";
+import { SourcesAdvanced } from "../components/SourcesAdvanced";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { api, errMessage } from "../lib/api";
+import { api } from "../lib/api";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
 import { bytes } from "../lib/util";
-import { Field, Spinner } from "../components/ui";
+import { Field } from "../components/ui";
 import type { Settings } from "../lib/types";
 
+const TABS = [["general", "כללי"], ["translation", "תרגום"], ["sources", "מקורות ותוספים (מתקדם)"], ["data", "נתונים"]] as const;
+
 export default function SettingsPage() {
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") ?? "general";
+  return (
+    <div className="page" style={{ maxWidth: 1040 }}>
+      <div className="page-head"><h1>הגדרות</h1></div>
+      <div className="tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setParams({ tab: k })}>{label}</button>
+        ))}
+      </div>
+      {tab === "translation" ? <TranslationSettingsPage embedded /> : tab === "sources" ? <SourcesAdvanced /> : <GeneralAndData tab={tab} />}
+    </div>
+  );
+}
+
+function GeneralAndData({ tab }: { tab: string }) {
   const { settings, saveSettings } = useApp();
   const [s, setS] = useState<Settings>(settings!);
   useEffect(() => setS(settings!), [settings]);
   const dirty = JSON.stringify(s) !== JSON.stringify(settings);
   const paths = useLoad(() => api.appPaths(), []);
   const cache = useLoad(() => api.cacheSize(), []);
-  const [pwd, setPwd] = useState("");
-  const [conn, setConn] = useState<string | null>(null);
-  const [testing, setTesting] = useState(false);
 
   async function save() {
     try {
@@ -24,20 +42,6 @@ export default function SettingsPage() {
       toast("ההגדרות נשמרו", "ok");
     } catch (e) {
       toastError(e);
-    }
-  }
-
-  async function testConn() {
-    setTesting(true);
-    setConn(null);
-    try {
-      await saveSettings(s);
-      if (pwd) await api.setSourcePassword(pwd);
-      setConn(`מחובר: ${await api.sourceStatus()}`);
-    } catch (e) {
-      setConn(`שגיאה: ${errMessage(e)}`);
-    } finally {
-      setTesting(false);
     }
   }
 
@@ -54,16 +58,14 @@ export default function SettingsPage() {
 
   const r = s.reader;
   const setR = (patch: Partial<Settings["reader"]>) => setS({ ...s, reader: { ...r, ...patch } });
-  const src = s.sources;
-  const setSrc = (patch: Partial<Settings["sources"]>) => setS({ ...s, sources: { ...src, ...patch } });
 
   return (
-    <div className="page" style={{ maxWidth: 1000 }}>
-      <div className="page-head">
-        <h1>הגדרות</h1>
+    <div>
+      {tab === "general" && (
+      <>
+      <div className="row" style={{ justifyContent: "flex-end", marginBottom: 12 }}>
         <button className="btn primary" disabled={!dirty} onClick={save}>{dirty ? "שמירת שינויים" : "נשמר"}</button>
       </div>
-
       <div className="panel">
         <div className="panel-head"><h2>מראה וקריאה</h2></div>
         <div className="grid-form">
@@ -105,26 +107,14 @@ export default function SettingsPage() {
       </div>
 
       <div className="panel">
-        <div className="panel-head"><h2>מקורות אונליין (Suwayomi)</h2></div>
-        <p className="muted small" style={{ marginBottom: 12 }}>
-          חיפוש והורדה עוברים דרך <span className="ltr">Suwayomi-Server</span> שרץ אצלך, עם הרחבות המקורות שהתקנת בו. האפליקציה מורידה את העמודים לספרייה המקומית,
-          כך שהם נשארים זמינים גם אם השרת כבוי.
-        </p>
-        <label className="check" style={{ marginBottom: 14 }}>
-          <input type="checkbox" checked={src.suwayomi_enabled} onChange={(e) => setSrc({ suwayomi_enabled: e.target.checked })} /> הפעלת מקורות אונליין
-        </label>
-        <div className="grid-form">
-          <Field label="כתובת השרת"><input className="input ltr" value={src.suwayomi_url} onChange={(e) => setSrc({ suwayomi_url: e.target.value })} /></Field>
-          <Field label="שם משתמש (אם הוגדרה הזדהות)"><input className="input ltr" value={src.suwayomi_user} onChange={(e) => setSrc({ suwayomi_user: e.target.value })} /></Field>
-          <Field label="סיסמה" hint="נשמרת ב-Keychain"><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
-          <Field label="הורדות במקביל" hint="נכנס לתוקף אחרי הפעלה מחדש"><input className="input" type="number" min={1} max={6} value={src.download_concurrency} onChange={(e) => setSrc({ download_concurrency: Number(e.target.value) })} /></Field>
-        </div>
-        <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn" onClick={testConn} disabled={testing || !src.suwayomi_enabled}>{testing ? <Spinner label="בודק…" /> : "שמירה ובדיקת חיבור"}</button>
-          {conn && <span className="small" style={{ color: conn.startsWith("שגיאה") ? "var(--bad)" : "var(--ok)" }} dir="auto">{conn}</span>}
-        </div>
+        <div className="panel-head"><h2>ברוך הבא</h2></div>
+        <div className="row"><button className="btn sm" onClick={() => saveSettings({ ...settings!, onboarding_done: false }).catch(toastError)}>להציג שוב את מסך הפתיחה בבית</button></div>
       </div>
+      </>
+      )}
 
+      {tab === "data" && (
+      <>
       <div className="panel">
         <div className="panel-head"><h2>נתונים</h2></div>
         <div className="col">
@@ -156,11 +146,17 @@ export default function SettingsPage() {
       </div>
 
       <div className="panel">
+        <div className="panel-head"><h2>היסטוריה</h2></div>
+        <a className="btn sm" href="#/history">היסטוריית קריאה</a>
+      </div>
+      <div className="panel">
         <div className="panel-head"><h2>אודות</h2></div>
         <p className="small muted">
           MangaAI Studio 0.1.0. בלי חשבון, בלי טלמטריה ובלי שרת ציבורי. רשימת רכיבי הקוד הפתוח והרישיונות שלהם נמצאת בקובץ THIRDPARTYNOTICES.md.
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }

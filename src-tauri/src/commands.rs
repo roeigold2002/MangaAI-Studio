@@ -23,6 +23,8 @@ use crate::translate::memory::{self, GlossaryInput};
 use crate::worker::{find_uv, PythonWorker, Vision};
 
 pub struct AppState {
+    pub runtime: Arc<crate::runtime::Runtime>,
+    pub search_gen: Arc<std::sync::atomic::AtomicU64>,
     pub db: Db,
     pub paths: Paths,
     pub engine: Engine,
@@ -541,6 +543,8 @@ pub struct RemoteDetail {
     pub chapters: Vec<RemoteChapter>,
     /// chapter_ref -> download status
     pub downloads: std::collections::HashMap<String, String>,
+    /// chapter_ref -> chapter id in the local library (downloaded chapters)
+    pub local_chapters: std::collections::HashMap<String, i64>,
     pub local_manga_id: Option<i64>,
 }
 
@@ -549,18 +553,25 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
     let a = make_adapter(&st.db, st.secrets.as_ref())?;
     let manga = a.manga(&manga_ref).await?;
     let chapters = a.chapters(&manga_ref).await?;
-    let (downloads, local) = st.db.with(|c| {
+    let (downloads, local_chapters, local) = st.db.with(|c| {
         let mut s = c.prepare("SELECT chapter_ref, status FROM download WHERE source_id = ?1 AND manga_ref = ?2")?;
         let map = s
             .query_map(rusqlite::params![manga.source_id, manga.manga_ref], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+        let mut s = c.prepare(
+            "SELECT d.chapter_ref, d.chapter_id FROM download d JOIN chapter ch ON ch.id = d.chapter_id
+             WHERE d.source_id = ?1 AND d.manga_ref = ?2 AND d.status = 'done'",
+        )?;
+        let chapters = s
+            .query_map(rusqlite::params![manga.source_id, manga.manga_ref], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
         use rusqlite::OptionalExtension;
         let local: Option<i64> = c
             .query_row("SELECT id FROM manga WHERE source_id = ?1 AND source_ref = ?2", rusqlite::params![manga.source_id, manga.manga_ref], |r| r.get(0))
             .optional()?;
-        Ok((map, local))
+        Ok((map, chapters, local))
     })?;
-    Ok(RemoteDetail { manga, chapters, downloads, local_manga_id: local })
+    Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local })
 }
 
 #[tauri::command]
@@ -701,6 +712,17 @@ pub async fn export_data(st: State<'_, AppState>, path: String) -> R<String> {
     .await
 }
 
+/// Debug builds only: tour progress lines into logs/dev-tour.log.
+#[tauri::command]
+pub fn dev_log(st: State<'_, AppState>, message: String) {
+    if cfg!(debug_assertions) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(st.paths.logs_dir().join("dev-tour.log")) {
+            let _ = writeln!(f, "{} {message}", crate::db::now());
+        }
+    }
+}
+
 /// Debug builds only: initial route from MANGAAI_START_ROUTE (used for screenshots during development).
 #[tauri::command]
 pub fn dev_start_route() -> Option<String> {
@@ -708,5 +730,305 @@ pub fn dev_start_route() -> Option<String> {
         std::env::var("MANGAAI_START_ROUTE").ok()
     } else {
         None
+    }
+}
+
+// ---------------- discovery: health, managed server, search, extensions ----------------
+
+fn suwayomi(st: &AppState) -> AppResult<Suwayomi> {
+    let s = settings::load(&st.db)?;
+    let auth = if s.sources.suwayomi_user.trim().is_empty() {
+        None
+    } else {
+        Some((s.sources.suwayomi_user.clone(), st.secrets.get("suwayomi")?.unwrap_or_default()))
+    };
+    Suwayomi::new(&s.sources.suwayomi_url, auth)
+}
+
+#[derive(Serialize)]
+pub struct SourceOverview {
+    pub enabled: bool,
+    pub url: String,
+    pub managed: bool,
+    pub runtime: crate::runtime::RuntimeStatus,
+    pub runtime_error: Option<String>,
+    pub health: Option<crate::catalog::SourceHealth>,
+    /// Local manga folder of the managed server ("Local source").
+    pub local_dir: Option<String>,
+}
+
+#[tauri::command]
+pub async fn source_overview(st: State<'_, AppState>) -> R<SourceOverview> {
+    let s = settings::load(&st.db)?;
+    let runtime = st.runtime.status().await;
+    let runtime_error = if s.sources.managed { st.runtime.exited().await } else { None };
+    let health = if s.sources.suwayomi_enabled { Some(crate::catalog::health(&suwayomi(&st)?).await) } else { None };
+    Ok(SourceOverview {
+        enabled: s.sources.suwayomi_enabled,
+        url: s.sources.suwayomi_url.clone(),
+        managed: s.sources.managed,
+        runtime,
+        runtime_error,
+        health,
+        local_dir: s.sources.managed.then(|| st.runtime.local_dir().to_string_lossy().into_owned()),
+    })
+}
+
+async fn wait_reachable(s: &Suwayomi, secs: u64) -> bool {
+    for _ in 0..secs {
+        if s.ping().await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    false
+}
+
+/// One-click setup: download + verify the pinned official release, start it on
+/// 127.0.0.1, register the official (verified) extension store. Installs no extensions.
+#[tauri::command]
+pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<SourceOverview> {
+    use tauri::Emitter;
+    let mut s = settings::load(&st.db)?;
+    if !st.runtime.is_installed() {
+        let a = app.clone();
+        st.runtime
+            .install(move |done, total| {
+                let _ = a.emit("runtime-progress", json!({"done": done, "total": total}));
+            })
+            .await?;
+    }
+    s.sources.managed = true;
+    s.sources.suwayomi_enabled = true;
+    s.sources.suwayomi_url = format!("http://127.0.0.1:{}", s.sources.managed_port);
+    settings::save(&st.db, &s)?;
+    start_managed(&st).await?;
+    let sw = suwayomi(&st)?;
+    if crate::catalog::list_stores(&sw).await.map(|l| l.is_empty()).unwrap_or(false) {
+        match crate::catalog::add_store(&sw, crate::catalog::OFFICIAL_STORE_URL).await {
+            Ok(_) => {
+                let _ = crate::catalog::refresh_extensions(&sw).await;
+            }
+            Err(e) => tracing::warn!("official store not added: {}", e.message),
+        }
+    }
+    st.dl_notify.notify_one();
+    source_overview(st).await
+}
+
+async fn start_managed(st: &AppState) -> AppResult<()> {
+    let s = settings::load(&st.db)?;
+    let sw = suwayomi(st)?;
+    if sw.ping().await.is_ok() {
+        return Ok(()); // something already answers on this address
+    }
+    st.runtime.start(s.sources.managed_port).await?;
+    if !wait_reachable(&sw, 120).await {
+        let why = st.runtime.exited().await.unwrap_or_else(|| "Suwayomi did not start within 2 minutes".into());
+        return Err(AppError::new("start_failed", why));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_sources(st: State<'_, AppState>) -> R<SourceOverview> {
+    start_managed(&st).await?;
+    source_overview(st).await
+}
+
+#[tauri::command]
+pub async fn stop_sources(st: State<'_, AppState>) -> R<()> {
+    st.runtime.stop().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn search_all(st: State<'_, AppState>, query: String, generation: u64) -> R<crate::catalog::SearchOutcome> {
+    st.search_gen.fetch_max(generation, std::sync::atomic::Ordering::SeqCst);
+    let adapter = make_adapter(&st.db, st.secrets.as_ref())?;
+    crate::catalog::search_all(adapter, &query, generation, st.search_gen.clone()).await
+}
+
+#[tauri::command]
+pub async fn remote_chapter_count(st: State<'_, AppState>, manga_ref: String) -> R<usize> {
+    Ok(make_adapter(&st.db, st.secrets.as_ref())?.chapters(&manga_ref).await?.len())
+}
+
+#[tauri::command]
+pub async fn list_stores(st: State<'_, AppState>) -> R<Vec<crate::catalog::ExtensionStore>> {
+    crate::catalog::list_stores(&suwayomi(&st)?).await
+}
+
+#[tauri::command]
+pub async fn add_store(st: State<'_, AppState>, url: String) -> R<crate::catalog::ExtensionStore> {
+    let sw = suwayomi(&st)?;
+    let store = crate::catalog::add_store(&sw, &url).await?;
+    let _ = crate::catalog::refresh_extensions(&sw).await;
+    Ok(store)
+}
+
+#[tauri::command]
+pub fn validate_store_url(url: String) -> R<String> {
+    crate::catalog::validate_store_url(&url)
+}
+
+#[tauri::command]
+pub async fn remove_store(st: State<'_, AppState>, index_url: String) -> R<()> {
+    crate::catalog::remove_store(&suwayomi(&st)?, &index_url).await
+}
+
+#[tauri::command]
+pub async fn list_extensions(st: State<'_, AppState>, refresh: bool) -> R<Vec<crate::catalog::Extension>> {
+    let sw = suwayomi(&st)?;
+    if refresh {
+        crate::catalog::refresh_extensions(&sw).await
+    } else {
+        crate::catalog::list_extensions(&sw).await
+    }
+}
+
+/// Install / uninstall / update one extension (explicit user action), then report the source list.
+#[tauri::command]
+pub async fn change_extension(st: State<'_, AppState>, pkg_name: String, action: String) -> R<Value> {
+    let sw = suwayomi(&st)?;
+    let (ext, sources) = crate::catalog::change_extension_and_sources(&sw, &pkg_name, &action).await?;
+    Ok(json!({"extension": ext, "sources": sources.len(),
+              "online_sources": sources.iter().filter(|s| s.id != crate::catalog::LOCAL_SOURCE_ID).count()}))
+}
+
+/// Queue one chapter at the front of the download queue ("read now"). Returns the download id.
+#[tauri::command]
+pub fn download_now(st: State<'_, AppState>, manga: RemoteManga, chapter: RemoteChapter) -> R<i64> {
+    downloads::enqueue(&st.db, &manga, std::slice::from_ref(&chapter))?;
+    let id: i64 = st.db.with(|c| {
+        Ok(c.query_row(
+            "SELECT id FROM download WHERE source_id = ?1 AND chapter_ref = ?2",
+            rusqlite::params![manga.source_id, chapter.chapter_ref],
+            |r| r.get(0),
+        )?)
+    })?;
+    downloads::prioritize(&st.db, id)?;
+    st.dl_notify.notify_one();
+    Ok(id)
+}
+
+/// Average size of a downloaded chapter, from what is already on disk (None if nothing yet).
+#[tauri::command]
+pub async fn download_size_hint(st: State<'_, AppState>) -> R<Option<u64>> {
+    let db = st.db.clone();
+    let lib = st.paths.library_dir();
+    blocking(move || {
+        let dirs: Vec<String> = db.with(|c| {
+            let mut s = c.prepare("SELECT location FROM chapter WHERE source_ref IS NOT NULL")?;
+            let v = s.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+            Ok(v)
+        })?;
+        let mut total = 0u64;
+        let mut n = 0u64;
+        for d in dirs.iter().filter(|d| std::path::Path::new(d).starts_with(&lib)) {
+            let size: u64 = walkdir::WalkDir::new(d).into_iter().filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+            if size > 0 {
+                total += size;
+                n += 1;
+            }
+        }
+        Ok((n > 0).then(|| total / n))
+    })
+    .await
+}
+
+#[derive(Serialize)]
+pub struct ProviderStatus {
+    pub ready: bool,
+    pub provider_id: String,
+    pub label: String,
+    pub kind: String,
+    pub local: bool,
+    /// no_provider | no_key | no_model | cli_missing | cloud_notice | local_only
+    pub missing: Vec<String>,
+}
+
+/// Can translation start right now with the saved settings?
+#[tauri::command]
+pub fn provider_status(st: State<'_, AppState>) -> R<ProviderStatus> {
+    provider_status_for(&settings::load(&st.db)?, st.secrets.as_ref())
+}
+
+pub fn provider_status_for(s: &AppSettings, secrets: &dyn SecretStore) -> AppResult<ProviderStatus> {
+    let Some(cfg) = s.active_provider().cloned() else {
+        return Ok(ProviderStatus { ready: false, provider_id: String::new(), label: String::new(), kind: String::new(), local: false, missing: vec!["no_provider".into()] });
+    };
+    let caps = providers::capabilities_for_kind(&cfg.kind, &cfg.endpoint);
+    let mut missing = vec![];
+    if caps.needs_key && secrets.get(&cfg.id)?.map(|k| k.trim().is_empty()).unwrap_or(true) {
+        missing.push("no_key".to_string());
+    }
+    if cfg.kind != "claude_cli" && cfg.model.trim().is_empty() {
+        missing.push("no_model".into());
+    }
+    if cfg.kind == "claude_cli" && find_claude(&cfg.endpoint).is_none() {
+        missing.push("cli_missing".into());
+    }
+    if !caps.local && !s.cloud_notice_accepted {
+        missing.push("cloud_notice".into());
+    }
+    if s.translation.local_only && !caps.local {
+        missing.push("local_only".into());
+    }
+    Ok(ProviderStatus { ready: missing.is_empty(), provider_id: cfg.id, label: cfg.label, kind: cfg.kind, local: caps.local, missing })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::MemoryStore;
+
+    #[test]
+    fn translation_setup_needed_until_provider_configured() {
+        let secrets = MemoryStore::default();
+        let mut s = AppSettings::default();
+        s.translation.active_provider = "anthropic".into();
+        let st = provider_status_for(&s, &secrets).unwrap();
+        assert!(!st.ready);
+        assert!(st.missing.contains(&"no_key".to_string()) && st.missing.contains(&"cloud_notice".to_string()));
+        secrets.set("anthropic", "k").unwrap();
+        s.cloud_notice_accepted = true;
+        assert!(provider_status_for(&s, &secrets).unwrap().ready);
+        // a local provider never asks for a key or the cloud notice
+        let mut s = AppSettings::default();
+        s.translation.active_provider = "ollama".into();
+        let st = provider_status_for(&s, &secrets).unwrap();
+        assert_eq!(st.missing, vec!["no_model".to_string()]);
+        s.translation.active_provider = "nope".into();
+        assert_eq!(provider_status_for(&s, &secrets).unwrap().missing, vec!["no_provider".to_string()]);
+    }
+
+    #[test]
+    fn library_progress_and_jobs_survive_restart() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("M/ch1");
+        std::fs::create_dir_all(&root).unwrap();
+        image::RgbImage::new(10, 14).save(root.join("1.png")).unwrap();
+        image::RgbImage::new(10, 14).save(root.join("2.png")).unwrap();
+        let db_path = d.path().join("library.db");
+        {
+            let db = Db::open(&db_path).unwrap();
+            import::import_path(&db, &d.path().join("M")).unwrap();
+            let ch: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM chapter", [], |r| r.get(0))?)).unwrap();
+            queries::save_progress(&db, ch, 1).unwrap();
+            let id = jobs::enqueue(&db, ch, None, "missing", 0).unwrap();
+            db.with(|c| { c.execute("UPDATE job SET status = 'running' WHERE id = ?1", [id])?; Ok(()) }).unwrap();
+            let mut s = settings::load(&db).unwrap();
+            s.onboarding_done = true;
+            settings::save(&db, &s).unwrap();
+        } // "app closed" mid-job
+        let db = Db::open(&db_path).unwrap();
+        assert_eq!(jobs::recover(&db).unwrap(), 1);
+        let m = queries::list_manga(&db).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].continue_page, Some(1));
+        assert!(m[0].continue_chapter_id.is_some());
+        assert_eq!(jobs::list(&db, false).unwrap()[0].status, "queued");
+        assert!(settings::load(&db).unwrap().onboarding_done);
     }
 }

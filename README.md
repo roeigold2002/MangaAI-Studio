@@ -89,17 +89,52 @@ Before the first cloud translation you must accept the privacy notice. It explai
 and page images if enabled, are sent to the provider. **Local-only mode** blocks every cloud
 provider. Keys are stored in the macOS Keychain under the service `com.mangaai.studio`.
 
-## Online sources (optional)
+## Discover → download → library → translate → read
 
-1. Install and run [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server/releases)
-   (macOS arm64 tarball). It listens on `http://127.0.0.1:4567`.
-2. In Suwayomi's web UI, add an extension repository and install source extensions.
-3. In MangaAI Studio: **Settings → Online sources**: enable, check the URL, **Save and test**.
-4. **Browse** lists the installed sources. Pick chapters → Download. Pages are saved to
-   `~/Library/Application Support/com.mangaai.studio/library/` and read like local chapters.
+1. **Home / חיפוש**: type a title. The search runs across every installed source at once (no source picker).
+   Results from different sources are merged only when both title and author match exactly.
+2. **Result page**: "קריאה עכשיו" downloads the first chapter at the front of the queue and opens it;
+   "הורדת כל הפרקים", a single chapter, or a chapter range. Large batches show the chapter count and a disk-space
+   estimate based on chapters already downloaded.
+3. Downloads run in the background (cancel / retry / resume from the last saved page) and appear in
+   **הספרייה שלי** automatically. A toast confirms each completed chapter.
+4. **תרגם לעברית** (manga page or inside the reader): if no translation provider is ready, a short dialog
+   asks for one (Claude Code needs no key; API providers ask for a key, stored in the Keychain). Then pick
+   chapters, see the estimate, start. Progress shows inside the reader; partial results stay readable and the
+   rest can be retried from the reader.
+5. The reader labels which version is shown (עברית / מקור). Translations are cached, so reopening costs nothing.
 
-The user is responsible for complying with the terms of the sources they configure and with applicable law.
-The app does not bypass logins, paywalls or DRM.
+## Online sources: how a fresh install gets them
+
+Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachiyomi source extensions.
+
+- **No server yet** → the app offers **התקנה והפעלה**: it downloads the pinned official release
+  (`v2.4.2366`, about 330 MB, macOS/Linux/Windows x64 builds), verifies its SHA-256 against the release's
+  `Checksums.sha256`, unpacks it to `…/com.mangaai.studio/suwayomi/`, and starts it on `127.0.0.1:4567`
+  with its own data folder. The app starts it with every launch and stops it on quit.
+- **You already run Suwayomi** → Settings → מקורות ותוספים: enter its address (a *server* URL, not a store URL).
+  A server the app did not install is never started, stopped or modified.
+- **Sources come from extension stores.** On setup the app registers the official Suwayomi store. It was
+  verified in October 2026 to contain one extension, "Suwayomi", which connects to another Suwayomi server
+  and provides no manga websites. Other stores are published by third parties. The app does not add them on
+  its own and installs no extension without an explicit click. Add a store and install extensions under
+  **Settings → מקורות ותוספים (מתקדם)**.
+- Suwayomi 2.x replaced the old `extensionRepos` setting with **Extension Stores**
+  (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
+  removed; Suwayomi has no "disable" operation.
+- The managed server's **Local source** reads `…/suwayomi/data/local/<Title>/<Chapter>.cbz`. Files placed there
+  show up in search too.
+
+### Troubleshooting
+
+| What you see | What to do |
+|---|---|
+| "צריך להתקין את מנוע המקורות" | Press **התקנה והפעלה** (needs internet once), or point Settings at your own server. |
+| "מנוע המקורות כבוי" | Press **הפעלה**. If it stops again, see `logs/suwayomi.log`. Port 4567 may be taken; change `managed_port`, or stop the other program. |
+| "אין עדיין מקורות אונליין" | The server runs but has no source extensions. Add a store and install an extension under Settings → מקורות ותוספים. |
+| Search shows "N מקורות לא ענו" | Those sources failed (site down, Cloudflare, …). Results from the others are still shown; **נסה שוב** retries. |
+| Store rejected ("HTTP error 404" …) | The address must be the store's index `.json` over https; the server fetches it and refuses non-stores. |
+| Translation dialog keeps asking | The listed item is missing (key, model, Claude Code not found, or the privacy confirmation). |
 
 ## Where things are stored
 
@@ -132,6 +167,10 @@ cd worker && DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib uv run --managed-pytho
 npm test
 ```
 
+Routine tests use mocks: wiremock GraphQL servers for multi-source search, no sources, no results,
+duplicates, store and extension failures and the post-install source refresh; fake sources for download
+resume and failure. The real end-to-end journeys are listed in IMPLEMENTATION_PLAN.md (Phase 9).
+
 The automated tests never call paid APIs; translation uses a scripted mock provider and a fake
 vision worker. The end-to-end check below uses the real worker and a real provider, and costs about
 $0.04–0.07 per page with Claude Opus:
@@ -157,9 +196,9 @@ cd src-tauri && cargo run --example suwayomi_live -- http://127.0.0.1:4567 local
 - Reading order inside a page uses a row heuristic. Complex layouts may need reordering in the editor.
 - Text removal on detailed artwork can leave traces. These pages are flagged "complex background" in the editor.
 - Cost estimates are approximate. Actual reported usage is recorded per provider in the queue.
-- Online sources were verified live against Suwayomi-Server v2.4.2366 (built-in Local source:
-  list, browse, search, chapters, download, cancel/retry, dedupe). Third-party extensions behave
-  like any Suwayomi source but were not tried.
+- No manga website source ships with the app or the official store. Online manga sites need a third-party
+  extension store chosen by the user. The live tests used the official store's "Suwayomi" extension and
+  the server's Local source.
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
   was not run there. Windows: the app and its test binaries cross-compile and link for x86_64 Windows (MinGW), but
   were not run (no Windows machine available).

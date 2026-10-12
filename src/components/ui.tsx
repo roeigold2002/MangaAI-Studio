@@ -91,12 +91,18 @@ export function Cover({ mangaId, title, children, version }: { mangaId: number; 
 export function MangaCard({ m }: { m: MangaSummary }) {
   const nav = useNavigate();
   const unread = m.chapter_count - m.read_count;
+  const open = () => nav(`/manga/${m.id}`);
   return (
-    <div className="cover-card" role="link" tabIndex={0} onClick={() => nav(`/manga/${m.id}`)} onKeyDown={(e) => e.key === "Enter" && nav(`/manga/${m.id}`)}>
+    <div className="cover-card" role="link" tabIndex={0} onClick={open} onKeyDown={(e) => e.key === "Enter" && open()}>
       <Cover mangaId={m.id} title={m.title}>
         <div className="flags">
-          {unread > 0 && <span className="badge">{unread} לא נקראו</span>}
-          {m.translated_chapters > 0 && <span className="badge mark">{m.translated_chapters} מתורגמים</span>}
+          {m.translated_chapters > 0 ? (
+            <span className="badge mark">עברית · {m.translated_chapters} פרקים</span>
+          ) : m.translated_pages > 0 ? (
+            <span className="badge mark">עברית · חלקי</span>
+          ) : null}
+          {m.failed_pages > 0 && <span className="badge">{m.failed_pages} עמ׳ נכשלו</span>}
+          {m.downloaded_chapters > 0 && <span className="badge">הורד</span>}
         </div>
         {m.chapter_count > 0 && (
           <div className="bar">
@@ -107,8 +113,16 @@ export function MangaCard({ m }: { m: MangaSummary }) {
       <div>
         <div className="cover-title" dir="auto">{m.title}</div>
         <div className="cover-sub">
-          {m.chapter_count} פרקים{m.source_kind === "source" ? " · הורד" : ""}
+          {m.read_count > 0 ? `${m.read_count}/${m.chapter_count} נקראו` : `${m.chapter_count} פרקים`}
+          {unread > 0 && m.read_count > 0 ? ` · ${unread} לא נקראו` : ""}
         </div>
+        {m.continue_chapter_id && (
+          <div className="card-actions">
+            <button className="btn sm primary" onClick={(e) => { e.stopPropagation(); nav(`/read/${m.continue_chapter_id}?page=${m.continue_page ?? 0}`); }}>
+              המשך קריאה
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -86,6 +86,11 @@ export const statusLabel: Record<string, string> = {
   cancelled: "בוטל",
 };
 
+/** Publication status from Suwayomi/Mihon ("ONGOING", …) in Hebrew; unknown → "". */
+export function publicationStatus(s: string | null | undefined): string {
+  return ({ ONGOING: "בהמשכים", COMPLETED: "הסתיים", CANCELLED: "בוטל", ON_HIATUS: "בהפסקה", LICENSED: "ברישיון", PUBLISHING_FINISHED: "הסתיים" } as Record<string, string>)[s ?? ""] ?? "";
+}
+
 export const jobLabel: Record<string, string> = {
   queued: "בתור", running: "בעבודה", paused: "מושהה", done: "הושלם", failed: "הסתיים עם שגיאות", cancelled: "בוטל",
 };

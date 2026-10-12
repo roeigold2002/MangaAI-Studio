@@ -19,7 +19,7 @@ pub struct SourceInfo {
     pub icon_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteManga {
     pub source_id: String,
     pub manga_ref: String,
@@ -120,10 +120,19 @@ impl Suwayomi {
         }
         let v: Value = resp.json().await.map_err(|e| AppError::new("source_error", format!("HTTP {status}: {e}")))?;
         if let Some(errs) = v["errors"].as_array().filter(|a| !a.is_empty()) {
-            let msg = errs.iter().filter_map(|e| e["message"].as_str()).collect::<Vec<_>>().join("; ");
+            let msg = errs.iter().filter_map(|e| e["message"].as_str()).map(clean_server_error).collect::<Vec<_>>().join("; ");
             return Err(AppError::new("source_error", msg));
         }
         Ok(v["data"].clone())
+    }
+
+    /// Raw GraphQL access for the catalog module (extensions, stores).
+    pub async fn graphql(&self, query: &str, variables: Value) -> AppResult<Value> {
+        self.gql(query, variables).await
+    }
+
+    pub fn absolute_url(&self, u: &str) -> String {
+        self.absolute(u)
     }
 
     fn manga_from(&self, v: &Value) -> RemoteManga {
@@ -139,6 +148,16 @@ impl Suwayomi {
             status: v["status"].as_str().map(String::from),
         }
     }
+}
+
+/// Server errors carry a Java stack trace; keep the first meaningful line.
+pub fn clean_server_error(msg: &str) -> String {
+    let first = msg.split(['\r', '\n']).next().unwrap_or(msg).trim();
+    let first = match first.find(") : ") {
+        Some(i) if first.starts_with("Exception while fetching data") => &first[i + 4..],
+        _ => first,
+    };
+    first.chars().take(300).collect()
 }
 
 const MANGA_FIELDS: &str = "id sourceId title thumbnailUrl author artist description genre status";
@@ -310,6 +329,13 @@ mod tests {
         let (bytes, ct) = s.fetch(&pages[0]).await.unwrap();
         assert_eq!((bytes, ct.as_deref()), (vec![1, 2, 3], Some("image/png")));
         assert!(s.fetch("http://evil.example/x").await.is_err());
+    }
+
+    #[test]
+    fn server_errors_are_trimmed() {
+        let raw = "Exception while fetching data (/addExtensionStore) : HTTP error 404\r\n\r\neu.kanade.Http: HTTP error 404\n\tat x";
+        assert_eq!(clean_server_error(raw), "HTTP error 404");
+        assert_eq!(clean_server_error("plain"), "plain");
     }
 
     #[tokio::test]

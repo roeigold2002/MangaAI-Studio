@@ -17,7 +17,7 @@ const KIND_INFO: Record<string, { local: boolean; key: boolean; note: string }> 
 
 const FONTS = ["VarelaRound-Regular.ttf", "SecularOne-Regular.ttf", "Karantina-Bold.ttf", "AmaticSC-Bold.ttf"];
 
-export default function TranslationSettingsPage() {
+export default function TranslationSettingsPage({ embedded = false }: { embedded?: boolean }) {
   const { settings, saveSettings } = useApp();
   const [s, setS] = useState<Settings>(settings!);
   const keys = useLoad(() => api.apiKeyStatus(), []);
@@ -40,10 +40,10 @@ export default function TranslationSettingsPage() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 1000 }}>
+    <div className={embedded ? "" : "page"} style={{ maxWidth: 1000 }}>
       <div className="page-head">
         <div>
-          <h1>הגדרות תרגום</h1>
+          {embedded ? <h2>תרגום</h2> : <h1>הגדרות תרגום</h1>}
           <p className="muted">ספק התרגום, איכות, עלויות, עימוד העברית והמנוע המקומי.</p>
         </div>
         <button className="btn primary" disabled={!dirty} onClick={save}>{dirty ? "שמירת שינויים" : "נשמר"}</button>

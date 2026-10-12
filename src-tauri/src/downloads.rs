@@ -125,6 +125,14 @@ pub fn enqueue(db: &Db, m: &RemoteManga, chapters: &[RemoteChapter]) -> AppResul
     })
 }
 
+/// Move a queued download to the front ("read now").
+pub fn prioritize(db: &Db, id: i64) -> AppResult<()> {
+    db.with(|c| {
+        c.execute("UPDATE download SET priority = (SELECT coalesce(max(priority),0) + 1 FROM download) WHERE id = ?1", [id])?;
+        Ok(())
+    })
+}
+
 pub fn cancel(db: &Db, id: i64) -> AppResult<()> {
     db.with(|c| {
         c.execute(
@@ -222,6 +230,18 @@ impl DownloadRunner {
                 self.emit(id);
                 return Ok(());
             }
+            // Resume: pages already saved by an interrupted attempt are kept.
+            let stem = format!("{:0width$}.", i + 1, width = width);
+            let already = std::fs::read_dir(&tmp_dir)?
+                .filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().starts_with(&stem) && !e.file_name().to_string_lossy().contains(".tmp"));
+            if already {
+                self.db.with(|c| {
+                    c.execute("UPDATE download SET progress = ?1, updated_at = ?2 WHERE id = ?3", params![i as i64 + 1, now(), id])?;
+                    Ok(())
+                })?;
+                continue;
+            }
             let mut last_err = None;
             let mut got = None;
             for attempt in 0..3u32 {
@@ -268,7 +288,7 @@ impl DownloadRunner {
         loop {
             let next: Option<i64> = self
                 .db
-                .with(|c| Ok(c.query_row("SELECT id FROM download WHERE status = 'queued' ORDER BY id LIMIT 1", [], |r| r.get(0)).optional()?))
+                .with(|c| Ok(c.query_row("SELECT id FROM download WHERE status = 'queued' ORDER BY priority DESC, id LIMIT 1", [], |r| r.get(0)).optional()?))
                 .unwrap_or(None);
             let Some(id) = next else {
                 self.notify.notified().await;
@@ -281,10 +301,8 @@ impl DownloadRunner {
             tokio::spawn(async move {
                 if let Err(e) = me.run_one(id).await {
                     tracing::warn!(download = id, "download failed: {}", e.message);
+                    // the partial folder is kept so a retry resumes where it stopped
                     let _ = me.set(id, "failed", Some(&e.message));
-                    let _ = std::fs::remove_dir_all(
-                        me.paths.library_dir().join(get(&me.db, id).ok().and_then(|d| d.manga_id).unwrap_or(0).to_string()).join(format!(".dl-{id}.part")),
-                    );
                 }
                 drop(permit);
                 me.notify.notify_one();
@@ -383,6 +401,58 @@ mod tests {
         assert_eq!(view.pages.len(), 12);
         assert!(view.chapter.downloaded);
         assert_eq!(enqueue(&r.db, &m, &chs).unwrap(), (0, 1), "done chapters are skipped");
+    }
+
+    /// Fails on one page the first time only (simulates a network hiccup).
+    struct FlakySource {
+        fetched: parking_lot::Mutex<Vec<usize>>,
+        fail_once: parking_lot::Mutex<Option<usize>>,
+    }
+
+    #[async_trait]
+    impl SourceAdapter for FlakySource {
+        async fn ping(&self) -> AppResult<String> { Ok("f".into()) }
+        async fn sources(&self) -> AppResult<Vec<SourceInfo>> { Ok(vec![]) }
+        async fn browse(&self, _: &str, _: &str, _: Option<&str>, _: u32) -> AppResult<MangaPage> { Ok(MangaPage { mangas: vec![], has_next_page: false }) }
+        async fn manga(&self, _: &str) -> AppResult<RemoteManga> { unimplemented!() }
+        async fn chapters(&self, _: &str) -> AppResult<Vec<RemoteChapter>> { Ok(vec![]) }
+        async fn page_urls(&self, _: &str) -> AppResult<Vec<String>> { Ok((0..6).map(|i| format!("f://{i}")).collect()) }
+        async fn fetch(&self, url: &str) -> AppResult<(Vec<u8>, Option<String>)> {
+            let i: usize = url.trim_start_matches("f://").parse().unwrap();
+            if *self.fail_once.lock() == Some(i) {
+                return Err(AppError::new("network", "hiccup"));
+            }
+            self.fetched.lock().push(i);
+            Ok((png(), Some("image/png".into())))
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_download_resumes_and_lands_in_library() {
+        let d = tempfile::tempdir().unwrap();
+        let flaky = Arc::new(FlakySource { fetched: parking_lot::Mutex::new(vec![]), fail_once: parking_lot::Mutex::new(Some(3)) });
+        let f2 = flaky.clone();
+        let db = Db::open_in_memory().unwrap();
+        let r = DownloadRunner {
+            db: db.clone(),
+            paths: Paths::new(d.path().to_path_buf()).unwrap(),
+            events: Arc::new(NoEvents),
+            notify: Arc::new(Notify::new()),
+            adapter: Arc::new(move || Ok(f2.clone() as Arc<dyn SourceAdapter>)),
+        };
+        let (m, chs) = remote();
+        enqueue(&db, &m, &chs).unwrap();
+        let id = list(&db).unwrap()[0].id;
+        assert!(r.run_one(id).await.is_err());
+        assert_eq!(flaky.fetched.lock().clone(), vec![0, 1, 2]);
+        *flaky.fail_once.lock() = None;
+        r.run_one(id).await.unwrap();
+        assert_eq!(flaky.fetched.lock().clone(), vec![0, 1, 2, 3, 4, 5], "pages 0-2 were not fetched again");
+        // automatic library insertion
+        let lib = crate::library::queries::list_manga(&db).unwrap();
+        assert_eq!(lib.len(), 1);
+        assert_eq!((lib[0].title.as_str(), lib[0].downloaded_chapters), ("Remote", 1));
+        assert_eq!(crate::library::queries::chapter_view(&db, get(&db, id).unwrap().chapter_id.unwrap()).unwrap().pages.len(), 6);
     }
 
     #[tokio::test]
