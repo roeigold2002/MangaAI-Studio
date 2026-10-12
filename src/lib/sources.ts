@@ -13,6 +13,7 @@ export function sourceState(o: SourceOverview | null): SourceState {
   }
   if (h.server === "auth") return "auth";
   if (h.server !== "ok") return "error";
-  return h.online_sources > 0 ? "ready" : "local_only";
+  // "ready" means a manga website is installed (the local folder and the Suwayomi bridge are not websites)
+  return h.website_sources > 0 ? "ready" : "local_only";
 }
 

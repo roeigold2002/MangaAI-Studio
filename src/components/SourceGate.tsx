@@ -91,7 +91,7 @@ export function SourceGate({ overview, onChange, compact }: { overview: SourceOv
       body = overview?.health?.message ?? "השרת לא ענה כמצופה.";
       break;
     case "local_only":
-      title = "אין עדיין מקורות אונליין";
+      title = "אין עדיין אתרי מנגה מותקנים";
       body = (
         <>
           מנוע המקורות פועל, אבל לא מותקנים בו תוספי מקורות. תוספים מגיעים מ"חנויות תוספים" שמפרסמים גורמים חיצוניים.

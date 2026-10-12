@@ -142,12 +142,12 @@ export interface EngineStatus {
 export interface SearchEntry { source_id: string; source_name: string; lang: string; manga: RemoteManga }
 export interface SearchGroup { title: string; author: string | null; thumbnail_url: string | null; description: string | null; entries: SearchEntry[] }
 export interface SearchOutcome {
-  groups: SearchGroup[]; sources_searched: number; online_sources: number;
+  groups: SearchGroup[]; sources_searched: number; online_sources: number; website_sources: number;
   failures: { source_name: string; message: string }[]; cancelled: boolean;
 }
 export interface SourceHealth {
   server: "ok" | "offline" | "auth" | "disabled" | "error"; server_version: string | null; message: string | null;
-  sources: number; online_sources: number; stores: number; installed_extensions: number;
+  sources: number; online_sources: number; website_sources: number; stores: number; installed_extensions: number;
 }
 export interface RuntimeStatus { supported: boolean; installed: boolean; running: boolean; version: string; install_dir: string; download_size_mb: number | null }
 export interface SourceOverview {

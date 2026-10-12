@@ -53,7 +53,7 @@ export default function HomePage() {
           <div className="col" style={{ gap: 8 }}>
             <div className="row small">
               <span className="dot" style={{ color: sources === "ready" ? "var(--ok)" : "var(--warn)" }} />
-              {sources === "ready" ? `מקורות אונליין: ${overview.data?.health?.online_sources} פעילים` : "מקורות אונליין: עוד לא מוכנים (פרטים למטה)"}
+              {sources === "ready" ? `אתרי מנגה: ${overview.data?.health?.website_sources} מותקנים` : "אתרי מנגה: עוד לא מותקנים (פרטים למטה)"}
             </div>
             <div className="row small">
               <span className="dot" style={{ color: data.library_count ? "var(--ok)" : "var(--faint)" }} />

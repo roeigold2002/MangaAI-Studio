@@ -77,14 +77,21 @@ export default function SearchPage() {
             <div><button className="btn sm" onClick={retry}>חיפוש חוזר</button></div>
           </div>
         )}
-        {!busy && result && result.groups.length === 0 && (
+        {!busy && result && result.groups.length === 0 && result.website_sources === 0 && (
+          <Empty title="אין עדיין אתרי מנגה מותקנים"
+            action={<a className="btn primary" href="#/settings?tab=sources">הוספת חנות תוספים</a>}>
+            החיפוש עבר רק על התיקייה המקומית{result.online_sources > 0 ? " ועל התוסף Suwayomi, שמתחבר לשרת Suwayomi אחר" : ""}, ולכן אין תוצאות.
+            כדי לחפש באתרי מנגה צריך להוסיף חנות תוספים ולהתקין תוספים לאתרים שאתה רוצה.
+          </Empty>
+        )}
+        {!busy && result && result.groups.length === 0 && result.website_sources > 0 && (
           <Empty title="לא נמצאו תוצאות">
-            חיפשנו ב-{result.sources_searched} מקורות ולא נמצאה מנגה בשם הזה. נסה כתיב אחר, שם באנגלית או את השם המקורי.
+            חיפשנו ב-{result.website_sources} אתרים ולא נמצאה מנגה בשם הזה. נסה כתיב אחר, שם באנגלית או את השם המקורי.
           </Empty>
         )}
         {result && result.failures.length > 0 && (
           <div className="callout small" style={{ marginBottom: 16 }}>
-            {result.failures.length} מקורות לא ענו: {result.failures.map((f) => `${f.source_name} (${f.message})`).join(" · ")}
+            {result.failures.length} מקורות לא ענו: {result.failures.map((f) => `${f.source_name} (${failureText(f)})`).join(" · ")}
             <button className="btn ghost sm" onClick={retry} style={{ marginInlineStart: 8 }}>נסה שוב</button>
           </div>
         )}
@@ -152,4 +159,14 @@ function ResultGrid({ groups }: { groups: SearchGroup[] }) {
       })}
     </div>
   );
+}
+
+/** Server errors are English stack-trace lines; explain the known ones in Hebrew. */
+function failureText(f: { source_name: string; message: string }): string {
+  if (f.source_name.startsWith("Suwayomi") && /index 0|Server URL|Connection refused|Failed to connect/i.test(f.message)) {
+    return "התוסף הזה מתחבר לשרת Suwayomi אחר וצריך כתובת שרת בהגדרות המקור. אם אין לך שרת כזה, אפשר להסיר אותו";
+  }
+  if (/timeout|did not answer/i.test(f.message)) return "המקור לא ענה בזמן";
+  if (/cloudflare/i.test(f.message)) return "האתר חוסם גישה אוטומטית (Cloudflare)";
+  return f.message;
 }

@@ -15,6 +15,15 @@ use crate::sources::{RemoteManga, SourceAdapter, SourceInfo, Suwayomi};
 /// Suwayomi's built-in source that reads files from its local folder.
 pub const LOCAL_SOURCE_ID: &str = "0";
 
+/// The official store's only extension, "Suwayomi": it reads another Suwayomi server's library,
+/// it is not a manga website (verified on v2.4.2366 / extension 1.4.29).
+pub const SUWAYOMI_BRIDGE_SOURCE_ID: &str = "3100117499901280806";
+
+/// A source that searches a manga website (not the local folder or the server bridge).
+pub fn is_website(source_id: &str) -> bool {
+    source_id != LOCAL_SOURCE_ID && source_id != SUWAYOMI_BRIDGE_SOURCE_ID
+}
+
 /// Official Suwayomi store (verified 2026-10: contains one extension, "Suwayomi",
 /// which connects to another Suwayomi server; it provides no manga websites).
 pub const OFFICIAL_STORE_URL: &str = "https://raw.githubusercontent.com/suwayomi/tachiyomi-extension/repo/index.min.json";
@@ -49,6 +58,8 @@ pub struct SearchOutcome {
     pub groups: Vec<SearchGroup>,
     pub sources_searched: usize,
     pub online_sources: usize,
+    /// Installed sources that are manga websites.
+    pub website_sources: usize,
     pub failures: Vec<SourceFailure>,
     /// A newer search replaced this one before it finished.
     pub cancelled: bool,
@@ -108,6 +119,7 @@ pub async fn search_all(
     }
     let sources = adapter.sources().await?;
     let online_sources = sources.iter().filter(|s| s.id != LOCAL_SOURCE_ID).count();
+    let website_sources = sources.iter().filter(|s| is_website(&s.id)).count();
     if sources.is_empty() {
         return Err(AppError::new("no_sources", "no manga sources are installed"));
     }
@@ -159,7 +171,7 @@ pub async fn search_all(
         }
     }
     let _ = total;
-    Ok(SearchOutcome { groups: group_results(entries), sources_searched: searched, online_sources, failures, cancelled })
+    Ok(SearchOutcome { groups: group_results(entries), sources_searched: searched, online_sources, website_sources, failures, cancelled })
 }
 
 // ---------------------------------------------------------------- health
@@ -172,6 +184,7 @@ pub struct SourceHealth {
     pub message: Option<String>,
     pub sources: usize,
     pub online_sources: usize,
+    pub website_sources: usize,
     pub stores: usize,
     pub installed_extensions: usize,
 }
@@ -183,6 +196,7 @@ pub async fn health(s: &Suwayomi) -> SourceHealth {
         message: None,
         sources: 0,
         online_sources: 0,
+        website_sources: 0,
         stores: 0,
         installed_extensions: 0,
     };
@@ -205,6 +219,7 @@ pub async fn health(s: &Suwayomi) -> SourceHealth {
     if let Ok(list) = s.sources().await {
         h.sources = list.len();
         h.online_sources = list.iter().filter(|x| x.id != LOCAL_SOURCE_ID).count();
+        h.website_sources = list.iter().filter(|x| is_website(&x.id)).count();
     }
     if let Ok(stores) = list_stores(s).await {
         h.stores = stores.len();
@@ -505,6 +520,13 @@ mod tests {
     }
 
     #[test]
+    fn bridge_and_local_are_not_websites() {
+        assert!(!is_website(LOCAL_SOURCE_ID));
+        assert!(!is_website(SUWAYOMI_BRIDGE_SOURCE_ID));
+        assert!(is_website("1234"));
+    }
+
+    #[test]
     fn store_url_validation() {
         assert!(validate_store_url(OFFICIAL_STORE_URL).is_ok());
         assert_eq!(validate_store_url("").unwrap_err().code, "invalid");
@@ -548,6 +570,7 @@ mod tests {
         let latest = Arc::new(AtomicU64::new(1));
         let out = search_all(a, "same", 1, latest).await.unwrap();
         assert_eq!(out.sources_searched, 3);
+        assert_eq!(out.website_sources, 3);
         assert_eq!(out.failures.len(), 1);
         assert_eq!(out.failures[0].message, "Cloudflare");
         assert_eq!(out.groups.len(), 2);
@@ -571,6 +594,7 @@ mod tests {
         let out = search_all(a, "x", 1, Arc::new(AtomicU64::new(1))).await.unwrap();
         assert!(out.groups.is_empty());
         assert_eq!(out.online_sources, 0);
+        assert_eq!(out.website_sources, 0);
         assert_eq!(out.sources_searched, 1);
     }
 
