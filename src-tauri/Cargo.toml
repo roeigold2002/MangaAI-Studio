@@ -1,0 +1,65 @@
+[package]
+name = "mangaai-studio"
+version = "0.1.0"
+description = "Personal manga reader with AI Hebrew translation"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+
+[lib]
+name = "mangaai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled", "serde_json"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+async-trait = "0.1"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+imagesize = "0.13"
+walkdir = "2"
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+regex = "1"
+base64 = "0.22"
+parking_lot = "0.12"
+percent-encoding = "2"
+tempfile = "3"
+futures-util = "0.3"
+which = "7"
+fs4 = "1"
+
+[features]
+# Debug aid: lets the frontend save PNG snapshots of the webview (visual QA without screen-recording rights).
+dev-snapshot = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSData", "NSDictionary", "NSError"] }
+objc2-app-kit = { version = "0.3", optional = true, features = ["NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics"] }
+objc2-web-kit = { version = "0.3", optional = true, features = ["WKWebView", "WKSnapshotConfiguration", "objc2-app-kit", "block2"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+
+[profile.dev.package."*"]
+opt-level = 2
