@@ -159,4 +159,9 @@ export interface Extension {
   pkg_name: string; name: string; lang: string; version_name: string; is_installed: boolean; has_update: boolean;
   is_obsolete: boolean; is_nsfw: boolean; store_index_url: string | null; icon_url: string | null;
 }
+export interface InstalledSource { id: string; name: string; displayName: string; lang: string; isConfigurable: boolean; isNsfw: boolean; iconUrl: string | null }
+export interface SourcePreference {
+  position: number; kind: "text" | "switch" | "checkbox" | "list" | "multi" | "unknown"; key: string; title: string; summary: string;
+  value: string | boolean | string[] | null; entries: string[]; entry_values: string[]; secret: boolean;
+}
 export interface ProviderStatus { ready: boolean; provider_id: string; label: string; kind: string; local: boolean; missing: string[] }

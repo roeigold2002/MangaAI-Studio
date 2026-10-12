@@ -359,6 +359,99 @@ pub async fn change_extension(s: &Suwayomi, pkg_name: &str, action: &str) -> App
     Ok(ext)
 }
 
+// ---------------------------------------------------------------- source settings
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SourcePreference {
+    /// Index in the source's preference list (what the server's update mutation expects).
+    pub position: usize,
+    /// text | switch | checkbox | list | multi
+    pub kind: String,
+    pub key: String,
+    pub title: String,
+    pub summary: String,
+    pub value: serde_json::Value,
+    pub entries: Vec<String>,
+    pub entry_values: Vec<String>,
+    /// Looks like a secret (password/token): the UI masks it.
+    pub secret: bool,
+}
+
+const PREF_FIELDS: &str = "preferences { __typename
+    ... on EditTextPreference { key title summary text: currentValue }
+    ... on SwitchPreference { key title summary on: currentValue }
+    ... on CheckBoxPreference { key title summary checked: currentValue }
+    ... on ListPreference { key title summary entries entryValues selected: currentValue }
+    ... on MultiSelectListPreference { key title summary entries entryValues values: currentValue } }";
+
+fn prefs_from(v: &serde_json::Value) -> Vec<SourcePreference> {
+    let strs = |x: &serde_json::Value| -> Vec<String> {
+        x.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default()
+    };
+    v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let (kind, value) = match p["__typename"].as_str().unwrap_or("") {
+                "EditTextPreference" => ("text", p["text"].clone()),
+                "SwitchPreference" => ("switch", p["on"].clone()),
+                "CheckBoxPreference" => ("checkbox", p["checked"].clone()),
+                "ListPreference" => ("list", p["selected"].clone()),
+                "MultiSelectListPreference" => ("multi", p["values"].clone()),
+                _ => ("unknown", serde_json::Value::Null),
+            };
+            let key = p["key"].as_str().unwrap_or_default().to_string();
+            let title = p["title"].as_str().unwrap_or_default().to_string();
+            let lower = format!("{key} {title}").to_lowercase();
+            SourcePreference {
+                position: i,
+                kind: kind.into(),
+                secret: kind == "text" && (lower.contains("password") || lower.contains("token") || lower.contains("secret")),
+                key,
+                title,
+                summary: p["summary"].as_str().unwrap_or_default().to_string(),
+                value,
+                entries: strs(&p["entries"]),
+                entry_values: strs(&p["entryValues"]),
+            }
+        })
+        .collect()
+}
+
+pub async fn source_preferences(s: &Suwayomi, source_id: &str) -> AppResult<Vec<SourcePreference>> {
+    let d = s.graphql(&format!("query($id: LongString!) {{ source(id: $id) {{ {PREF_FIELDS} }} }}"), json!({"id": source_id})).await?;
+    Ok(prefs_from(&d["source"]["preferences"]))
+}
+
+/// Update one preference; returns the server's new preference list.
+pub async fn set_source_preference(
+    s: &Suwayomi,
+    source_id: &str,
+    position: usize,
+    kind: &str,
+    value: serde_json::Value,
+) -> AppResult<Vec<SourcePreference>> {
+    let field = match kind {
+        "text" => "editTextState",
+        "switch" => "switchState",
+        "checkbox" => "checkBoxState",
+        "list" => "listState",
+        "multi" => "multiSelectState",
+        _ => return Err(AppError::invalid("unsupported preference type")),
+    };
+    let mut change = json!({"position": position});
+    change[field] = value;
+    let d = s
+        .graphql(
+            &format!("mutation($id: LongString!, $c: SourcePreferenceChangeInput!) {{ updateSourcePreference(input: {{source: $id, change: $c}}) {{ {PREF_FIELDS} }} }}"),
+            json!({"id": source_id, "c": change}),
+        )
+        .await?;
+    Ok(prefs_from(&d["updateSourcePreference"]["preferences"]))
+}
+
 /// Change an extension, then re-read the server's source list so new sources appear immediately.
 pub async fn change_extension_and_sources(s: &Suwayomi, pkg_name: &str, action: &str) -> AppResult<(Extension, Vec<SourceInfo>)> {
     let ext = change_extension(s, pkg_name, action).await?;
@@ -539,6 +632,31 @@ mod tests {
         let (ext, sources) = change_extension_and_sources(&s, "p.new", "install").await.unwrap();
         assert!(ext.is_installed);
         assert_eq!(sources.iter().filter(|x| x.id != LOCAL_SOURCE_ID).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn source_preferences_roundtrip() {
+        let prefs = json!([
+            {"__typename": "EditTextPreference", "key": "Server URL Address", "title": "Server URL Address", "summary": "", "text": ""},
+            {"__typename": "ListPreference", "key": "Login Mode", "title": "Login Mode", "summary": "None", "entries": ["None", "Basic"], "entryValues": ["NONE", "BASIC_AUTH"], "selected": "NONE"},
+            {"__typename": "EditTextPreference", "key": "Password", "title": "Password", "summary": "", "text": ""},
+            {"__typename": "CheckBoxPreference", "key": "Fetch", "title": "Fetch", "summary": "", "checked": true}
+        ]);
+        let mut after = prefs.clone();
+        after[0]["text"] = json!("http://127.0.0.1:4568");
+        let server = server_with(vec![
+            ("updateSourcePreference", json!({"data": {"updateSourcePreference": {"preferences": after}}})),
+            ("source(id", json!({"data": {"source": {"preferences": prefs}}})),
+        ])
+        .await;
+        let s = Suwayomi::new(&server.uri(), None).unwrap();
+        let p = source_preferences(&s, "31").await.unwrap();
+        assert_eq!(p.len(), 4);
+        assert_eq!((p[1].kind.as_str(), p[1].entry_values.len()), ("list", 2));
+        assert!(p[2].secret && !p[0].secret);
+        let p = set_source_preference(&s, "31", 0, "text", json!("http://127.0.0.1:4568")).await.unwrap();
+        assert_eq!(p[0].value, "http://127.0.0.1:4568");
+        assert!(set_source_preference(&s, "31", 0, "weird", json!(1)).await.is_err());
     }
 
     #[tokio::test]

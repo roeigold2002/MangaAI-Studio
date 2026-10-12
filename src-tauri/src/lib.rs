@@ -297,6 +297,9 @@ macro_rules! app_handlers {
             commands::download_now,
             commands::download_size_hint,
             commands::provider_status,
+            commands::installed_sources,
+            commands::source_preferences,
+            commands::set_source_preference,
         ]
     };
 }

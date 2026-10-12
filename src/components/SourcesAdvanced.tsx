@@ -7,7 +7,7 @@ import { toast, toastError, useApp, useLoad } from "../lib/store";
 import { remoteUrl } from "../lib/util";
 import { Empty, ErrorBox, Field, Modal, Spinner } from "./ui";
 import { SourceGate, sourceState } from "./SourceGate";
-import type { Extension } from "../lib/types";
+import type { Extension, InstalledSource, SourcePreference } from "../lib/types";
 
 /** Advanced: server connection, managed engine, extension stores and extensions. */
 export function SourcesAdvanced() {
@@ -37,6 +37,7 @@ export function SourcesAdvanced() {
           </div>
         </div>
       )}
+      {serverUp && <InstalledSources key={o?.health?.sources} />}
       {serverUp && <Stores onChanged={overview.reload} />}
       {serverUp && <Extensions onChanged={overview.reload} />}
     </div>
@@ -279,5 +280,110 @@ function Extensions({ onChanged }: { onChanged: () => void }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+/** Installed sources: search them and open a source's own settings (server address, login, …). */
+function InstalledSources() {
+  const { data, error, reload } = useLoad(() => api.installedSources(), []);
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState<InstalledSource | null>(null);
+  const list = (data ?? []).filter((s) => s.id !== "0" && (!q || s.displayName.toLowerCase().includes(q.toLowerCase())));
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2>מקורות מותקנים</h2>
+        <div className="search" style={{ width: 220 }}>
+          <Search size={16} />
+          <input className="input" placeholder="חיפוש מקור" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+      </div>
+      {error && <ErrorBox error={error} onRetry={reload} />}
+      {data && list.length === 0 && <p className="muted">{q ? "אין מקור בשם הזה." : "אין מקורות אונליין מותקנים. התקן תוסף מהרשימה למטה."}</p>}
+      <div className="list">
+        {list.map((s) => (
+          <div key={s.id} className="list-row">
+            {s.iconUrl && <img src={remoteUrl(s.iconUrl)} width={26} height={26} style={{ borderRadius: 6 }} alt="" />}
+            <span className="grow" dir="auto">{s.displayName}</span>
+            <span className="badge">{s.lang}</span>
+            {s.isNsfw && <span className="badge warn">18+</span>}
+            {s.isConfigurable && <button className="btn sm" onClick={() => setOpen(s)}>הגדרות המקור</button>}
+          </div>
+        ))}
+      </div>
+      {open && <SourceSettings source={open} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+function SourceSettings({ source, onClose }: { source: InstalledSource; onClose: () => void }) {
+  const [prefs, setPrefs] = useState<SourcePreference[] | null>(null);
+  const [draft, setDraft] = useState<Record<number, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.sourcePreferences(source.id).then(setPrefs).catch((e) => setError(errMessage(e)));
+  }, [source.id]);
+
+  async function set(p: SourcePreference, value: unknown) {
+    setBusy(true);
+    setError(null);
+    try {
+      setPrefs(await api.setSourcePreference(source.id, p.position, p.kind, value));
+      setDraft((d) => { const n = { ...d }; delete n[p.position]; return n; });
+      toast(`נשמר: ${p.title}`, "ok");
+    } catch (e) {
+      setError(errMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`הגדרות: ${source.displayName}`} onClose={onClose} actions={<button className="btn primary" onClick={onClose}>סגירה</button>}>
+      <p className="small muted">ההגדרות נשמרות במנוע המקורות (Suwayomi) ומגיעות מהתוסף עצמו.</p>
+      {!prefs && !error && <Spinner label="טוען…" />}
+      {error && <div className="callout bad small" dir="auto">{error}</div>}
+      {prefs?.filter((p) => p.kind !== "unknown").map((p) => (
+        <div key={p.position} className="col" style={{ gap: 6 }}>
+          {p.kind === "text" && (
+            <Field label={p.title} hint={p.summary || undefined}>
+              <div className="row">
+                <input className="input ltr" type={p.secret ? "password" : "text"} autoComplete="off"
+                  value={draft[p.position] ?? (p.secret ? "" : String(p.value ?? ""))}
+                  placeholder={p.secret && p.value ? "••••••" : p.summary}
+                  onChange={(e) => setDraft({ ...draft, [p.position]: e.target.value })} />
+                <button className="btn sm" disabled={busy || draft[p.position] === undefined} onClick={() => set(p, draft[p.position])}>שמירה</button>
+              </div>
+            </Field>
+          )}
+          {(p.kind === "switch" || p.kind === "checkbox") && (
+            <label className="check"><input type="checkbox" checked={!!p.value} disabled={busy} onChange={(e) => set(p, e.target.checked)} /> {p.title}</label>
+          )}
+          {p.kind === "list" && (
+            <Field label={p.title}>
+              <select className="select" value={String(p.value ?? "")} disabled={busy} onChange={(e) => set(p, e.target.value)}>
+                {p.entry_values.map((v, i) => <option key={v} value={v}>{p.entries[i] ?? v}</option>)}
+              </select>
+            </Field>
+          )}
+          {p.kind === "multi" && (
+            <Field label={p.title}>
+              <div className="row wrap">
+                {p.entry_values.map((v, i) => {
+                  const cur = Array.isArray(p.value) ? p.value : [];
+                  return (
+                    <label key={v} className="check small">
+                      <input type="checkbox" checked={cur.includes(v)} disabled={busy}
+                        onChange={(e) => set(p, e.target.checked ? [...cur, v] : cur.filter((x) => x !== v))} /> {p.entries[i] ?? v}
+                    </label>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+        </div>
+      ))}
+    </Modal>
   );
 }

@@ -81,6 +81,8 @@ ARCHITECTURE.md, docs/DECISIONS.md, docs/UPSTREAM_EVALUATION.md, THIRDPARTYNOTIC
   chapters, chapter range, disk estimate from earlier downloads, per-chapter status.
 - ☑ Downloads resume from the last saved page; completion and failure toasts; library insertion is automatic.
 - ☑ "תרגם לעברית": provider readiness check → short setup dialog (only when needed) → chapter choice → estimate.
+- ☑ Installed sources: search, per-source settings (Suwayomi source preferences: text, list, checkbox, multi-select;
+  secrets masked)
 - ☑ Reader: shown-version label, translate banner, in-reader job progress, partial results plus retry, page and
   chapter buttons.
 
@@ -98,4 +100,7 @@ ARCHITECTURE.md, docs/DECISIONS.md, docs/UPSTREAM_EVALUATION.md, THIRDPARTYNOTIC
 | Restart: downloads, translations, progress kept | **Real**: second launch on the same data folder; also a unit test |
 | Managed server stops with the app (quit and SIGTERM) | **Real** |
 | No sources / no results / duplicates / install failure / resume / provider not configured | **Mocks** (wiremock GraphQL, fake sources) |
+| **Online source** search → download → translate → read (final build, fresh folder, no local files) | **Real**: official "Suwayomi" extension installed with consent, configured in the new source-settings dialog to a second Suwayomi server (127.0.0.1:4568) holding the CC-BY sample; search, result page, download over HTTP, library, translation 4/4 pages ($0.19), Hebrew reader |
+| Restart after the final journey | **Real**: library, "המשך קריאה", Hebrew reader, home continue-reading |
+| Offline reading (final build) | **Real**: `sandbox-exec (deny network*)`; reader shows the Hebrew pages, search explains that the source engine is unreachable |
 | Online manga **websites** | **Not tested**: none are available without a third-party extension store, which the app does not add on its own |

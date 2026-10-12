@@ -896,6 +896,40 @@ pub async fn change_extension(st: State<'_, AppState>, pkg_name: String, action:
               "online_sources": sources.iter().filter(|s| s.id != crate::catalog::LOCAL_SOURCE_ID).count()}))
 }
 
+#[tauri::command]
+pub async fn installed_sources(st: State<'_, AppState>) -> R<Vec<Value>> {
+    let sw = suwayomi(&st)?;
+    let d = sw.graphql("query { sources { nodes { id name displayName lang isConfigurable isNsfw iconUrl } } }", json!({})).await?;
+    Ok(d["sources"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut v| {
+            if let Some(u) = v["iconUrl"].as_str().map(|u| sw.absolute_url(u)) {
+                v["iconUrl"] = json!(u);
+            }
+            v
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn source_preferences(st: State<'_, AppState>, source_id: String) -> R<Vec<crate::catalog::SourcePreference>> {
+    crate::catalog::source_preferences(&suwayomi(&st)?, &source_id).await
+}
+
+#[tauri::command]
+pub async fn set_source_preference(
+    st: State<'_, AppState>,
+    source_id: String,
+    position: usize,
+    kind: String,
+    value: Value,
+) -> R<Vec<crate::catalog::SourcePreference>> {
+    crate::catalog::set_source_preference(&suwayomi(&st)?, &source_id, position, &kind, value).await
+}
+
 /// Queue one chapter at the front of the download queue ("read now"). Returns the download id.
 #[tauri::command]
 pub fn download_now(st: State<'_, AppState>, manga: RemoteManga, chapter: RemoteChapter) -> R<i64> {

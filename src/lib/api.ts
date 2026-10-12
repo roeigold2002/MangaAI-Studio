@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Category, ChapterView, Download, EditorPage, EngineStatus, Estimate, GlossaryEntry, HistoryEntry, HomeData, ImportReport,
   Job, MangaDetail, MangaSummary, MemoryEntry, PageState, Region, RemoteChapter, RemoteDetail, RemoteManga, Settings, SourceInfo,
-  SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus,
+  SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus, InstalledSource, SourcePreference,
 } from "./types";
 
 export const api = {
@@ -94,6 +94,10 @@ export const api = {
   downloadNow: (manga: RemoteManga, chapter: RemoteChapter) => invoke<number>("download_now", { manga, chapter }),
   downloadSizeHint: () => invoke<number | null>("download_size_hint"),
   providerStatus: () => invoke<ProviderStatus>("provider_status"),
+  installedSources: () => invoke<InstalledSource[]>("installed_sources"),
+  sourcePreferences: (sourceId: string) => invoke<SourcePreference[]>("source_preferences", { sourceId }),
+  setSourcePreference: (sourceId: string, position: number, kind: string, value: unknown) =>
+    invoke<SourcePreference[]>("set_source_preference", { sourceId, position, kind, value }),
   // data
   appPaths: () => invoke<{ data: string; library: string; logs: string }>("app_paths"),
   cacheSize: () => invoke<{ derived: number; thumbs: number; library: number }>("cache_size"),

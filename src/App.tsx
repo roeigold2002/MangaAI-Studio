@@ -116,9 +116,13 @@ async function devStart(spec: string) {
   const log = (m: string) => invoke("dev_log", { message: m }).catch(() => {});
   const visible = (el: Element) => (el as HTMLElement).offsetParent !== null || (el as HTMLElement).getClientRects().length > 0;
   const findByText = (text: string) => {
-    const els = [...document.querySelectorAll("button, a, [role=link], label, .cover-card, .list-row")].filter(visible);
-    // innermost match first (a button inside a card beats the card)
-    return els.reverse().find((el) => (el.textContent ?? "").includes(text)) as HTMLElement | undefined;
+    // buttons and links first, then cards/rows/labels; later in the DOM (e.g. an open dialog) wins
+    for (const sel of ["button, a, [role=link]", "label, .cover-card, .list-row"]) {
+      const els = [...document.querySelectorAll(sel)].filter(visible).filter((el) => !(el as HTMLButtonElement).disabled);
+      const hit = els.reverse().find((el) => (el.textContent ?? "").includes(text));
+      if (hit) return hit as HTMLElement;
+    }
+    return undefined;
   };
   await wait(2000);
   for (const step of spec.slice(5).split(";").map((x) => x.trim()).filter(Boolean)) {

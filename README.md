@@ -122,6 +122,7 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
 - Suwayomi 2.x replaced the old `extensionRepos` setting with **Extension Stores**
   (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
   removed; Suwayomi has no "disable" operation.
+- Some sources need settings (server address, login…): Settings → מקורות ותוספים → מקורות מותקנים → הגדרות המקור.
 - The managed server's **Local source** reads `…/suwayomi/data/local/<Title>/<Chapter>.cbz`. Files placed there
   show up in search too.
 
