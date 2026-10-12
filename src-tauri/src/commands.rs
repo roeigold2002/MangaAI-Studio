@@ -574,10 +574,30 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
     Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local })
 }
 
+/// Record the source's language on the local manga (OCR and translation depend on it).
+async fn set_manga_language(st: &AppState, manga: &RemoteManga, manga_id: i64) {
+    let Ok(a) = make_adapter(&st.db, st.secrets.as_ref()) else { return };
+    let Ok(list) = a.sources().await else { return };
+    if let Some(src) = list.iter().find(|s| s.id == manga.source_id) {
+        let lang = match src.lang.as_str() {
+            l if l.starts_with("zh") => "zh",
+            l if l.starts_with("pt") => "pt",
+            l => l,
+        };
+        if lang != "all" && lang != "localsourcelang" {
+            let _ = st.db.with(|c| {
+                c.execute("UPDATE manga SET source_lang = ?1 WHERE id = ?2", rusqlite::params![lang, manga_id])?;
+                Ok(())
+            });
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn enqueue_downloads(st: State<'_, AppState>, manga: RemoteManga, chapters: Vec<RemoteChapter>) -> R<Value> {
     let (added, skipped) = downloads::enqueue(&st.db, &manga, &chapters)?;
     let manga_id = downloads::local_manga(&st.db, &manga)?;
+    set_manga_language(&st, &manga, manga_id).await;
     // cover in the background
     if let Some(url) = manga.thumbnail_url.clone() {
         let db = st.db.clone();
@@ -846,7 +866,8 @@ pub async fn stop_sources(st: State<'_, AppState>) -> R<()> {
 pub async fn search_all(st: State<'_, AppState>, query: String, generation: u64) -> R<crate::catalog::SearchOutcome> {
     st.search_gen.fetch_max(generation, std::sync::atomic::Ordering::SeqCst);
     let adapter = make_adapter(&st.db, st.secrets.as_ref())?;
-    crate::catalog::search_all(adapter, &query, generation, st.search_gen.clone()).await
+    let languages = settings::load(&st.db)?.sources.languages;
+    crate::catalog::search_all(adapter, &query, generation, st.search_gen.clone(), &languages).await
 }
 
 #[tauri::command]
@@ -932,8 +953,11 @@ pub async fn set_source_preference(
 
 /// Queue one chapter at the front of the download queue ("read now"). Returns the download id.
 #[tauri::command]
-pub fn download_now(st: State<'_, AppState>, manga: RemoteManga, chapter: RemoteChapter) -> R<i64> {
+pub async fn download_now(st: State<'_, AppState>, manga: RemoteManga, chapter: RemoteChapter) -> R<i64> {
     downloads::enqueue(&st.db, &manga, std::slice::from_ref(&chapter))?;
+    if let Ok(mid) = downloads::local_manga(&st.db, &manga) {
+        set_manga_language(&st, &manga, mid).await;
+    }
     let id: i64 = st.db.with(|c| {
         Ok(c.query_row(
             "SELECT id FROM download WHERE source_id = ?1 AND chapter_ref = ?2",

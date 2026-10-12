@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, BookOpen, Download, Library, Play } from "lucide-react";
 import { api } from "../lib/api";
 import { toast, toastError, useEvent, useLoad, useThrottled } from "../lib/store";
-import { bytes, publicationStatus, remoteUrl } from "../lib/util";
+import { bytes, langName, publicationStatus, remoteUrl } from "../lib/util";
 import { ErrorBox, Modal, Spinner } from "../components/ui";
 import type { RemoteChapter, SearchGroup } from "../lib/types";
 
@@ -83,7 +83,22 @@ export default function TitlePage() {
       <div className="row" style={{ marginBottom: 14 }}>
         <button className="btn ghost" onClick={() => nav(-1)}><ArrowRight size={16} /> חזרה לתוצאות</button>
       </div>
-      {error && <ErrorBox error={error} onRetry={reload} />}
+      {error && /no chapters/i.test(error) ? (
+        <div className="callout col" style={{ gap: 8 }}>
+          <span>המקור הזה לא מצא פרקים לכותר. במקורות כמו MangaDex כל שפה היא מקור נפרד, ובשפה הזו אין פרקים.</span>
+          {group && group.entries.length > 1 && (
+            <div className="row wrap">
+              <span className="small muted">לנסות בשפה אחרת:</span>
+              {group.entries.filter((e) => e.manga.manga_ref !== mangaRef).map((e) => (
+                <button key={e.source_id + e.manga.manga_ref} className="btn sm"
+                  onClick={() => nav(`/title/${encodeURIComponent(e.manga.manga_ref)}`, { state: { group }, replace: true })}>
+                  {e.source_name} · {langName(e.lang)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : error ? <ErrorBox error={error} onRetry={reload} /> : null}
       {m && (
         <div className="detail-hero">
           <div className="cover">{m.thumbnail_url ? <img src={remoteUrl(m.thumbnail_url)} alt="" /> : <div className="fallback tone">{m.title}</div>}</div>
@@ -118,12 +133,12 @@ export default function TitlePage() {
                 {group.entries.map((e) => (
                   <button key={e.source_id + e.manga.manga_ref} className={`btn sm ${e.manga.manga_ref === mangaRef ? "primary" : "ghost"}`}
                     onClick={() => nav(`/title/${encodeURIComponent(e.manga.manga_ref)}`, { state: { group }, replace: true })}>
-                    {e.source_name}
+                    {e.source_name} · {langName(e.lang)}
                   </button>
                 ))}
               </div>
             )}
-            {group && group.entries.length === 1 && <span className="small faint">מקור: {group.entries[0].source_name}</span>}
+            {group && group.entries.length === 1 && <span className="small faint">מקור: {group.entries[0].source_name} · {langName(group.entries[0].lang)}</span>}
           </div>
         </div>
       )}

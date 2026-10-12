@@ -107,22 +107,38 @@ pub fn group_results(entries: Vec<SearchEntry>) -> Vec<SearchGroup> {
 
 /// Search every installed source concurrently. `generation` lets a newer search
 /// cancel sources that have not started yet.
+/// Position of a source language in the user's preference list ("all"/local after preferred ones).
+pub fn lang_rank(lang: &str, languages: &[String]) -> Option<usize> {
+    if let Some(i) = languages.iter().position(|l| l.eq_ignore_ascii_case(lang)) {
+        return Some(i);
+    }
+    match lang {
+        "all" | "localsourcelang" => Some(languages.len()),
+        _ if languages.is_empty() => Some(0),
+        _ => None,
+    }
+}
+
 pub async fn search_all(
     adapter: Arc<dyn SourceAdapter>,
     query: &str,
     generation: u64,
     latest: Arc<AtomicU64>,
+    languages: &[String],
 ) -> AppResult<SearchOutcome> {
     let query = query.trim();
     if query.is_empty() {
         return Err(AppError::invalid("empty search"));
     }
-    let sources = adapter.sources().await?;
-    let online_sources = sources.iter().filter(|s| s.id != LOCAL_SOURCE_ID).count();
-    let website_sources = sources.iter().filter(|s| is_website(&s.id)).count();
-    if sources.is_empty() {
+    let all = adapter.sources().await?;
+    if all.is_empty() {
         return Err(AppError::new("no_sources", "no manga sources are installed"));
     }
+    // only sources in the chosen languages (MangaDex alone installs ~60 language sources)
+    let mut sources: Vec<SourceInfo> = all.into_iter().filter(|s| lang_rank(&s.lang, languages).is_some()).collect();
+    sources.sort_by_key(|s| (lang_rank(&s.lang, languages).unwrap_or(usize::MAX), s.name.to_lowercase()));
+    let online_sources = sources.iter().filter(|s| s.id != LOCAL_SOURCE_ID).count();
+    let website_sources = sources.iter().filter(|s| is_website(&s.id)).count();
     let total = sources.len();
     let results: Vec<(SourceInfo, Option<AppResult<Vec<RemoteManga>>>)> = stream::iter(sources)
         .map(|s| {
@@ -149,9 +165,9 @@ pub async fn search_all(
     let mut entries = vec![];
     let mut failures = vec![];
     let mut searched = 0;
-    // stable order: sources in the order the server listed them
+    // preferred language first, so a merged result opens in the user's language
     let mut results = results;
-    results.sort_by_key(|(s, _)| s.name.to_lowercase());
+    results.sort_by_key(|(s, _)| (lang_rank(&s.lang, languages).unwrap_or(usize::MAX), s.name.to_lowercase()));
     for (src, r) in results {
         match r {
             None => {}
@@ -520,6 +536,16 @@ mod tests {
     }
 
     #[test]
+    fn language_preference_filters_and_orders() {
+        let langs = vec!["ja".to_string(), "en".to_string()];
+        assert_eq!(lang_rank("ja", &langs), Some(0));
+        assert_eq!(lang_rank("EN", &langs), Some(1));
+        assert_eq!(lang_rank("all", &langs), Some(2));
+        assert_eq!(lang_rank("af", &langs), None, "unwanted languages are not searched");
+        assert_eq!(lang_rank("af", &[]), Some(0), "no preference = everything");
+    }
+
+    #[test]
     fn bridge_and_local_are_not_websites() {
         assert!(!is_website(LOCAL_SOURCE_ID));
         assert!(!is_website(SUWAYOMI_BRIDGE_SOURCE_ID));
@@ -568,7 +594,7 @@ mod tests {
         .await;
         let a: Arc<dyn SourceAdapter> = Arc::new(Suwayomi::new(&server.uri(), None).unwrap());
         let latest = Arc::new(AtomicU64::new(1));
-        let out = search_all(a, "same", 1, latest).await.unwrap();
+        let out = search_all(a, "same", 1, latest, &[]).await.unwrap();
         assert_eq!(out.sources_searched, 3);
         assert_eq!(out.website_sources, 3);
         assert_eq!(out.failures.len(), 1);
@@ -582,7 +608,7 @@ mod tests {
     async fn search_with_no_sources_and_no_results() {
         let empty = server_with(vec![("sources", json!({"data": {"sources": {"nodes": []}}}))]).await;
         let a: Arc<dyn SourceAdapter> = Arc::new(Suwayomi::new(&empty.uri(), None).unwrap());
-        let e = search_all(a, "x", 1, Arc::new(AtomicU64::new(1))).await.unwrap_err();
+        let e = search_all(a, "x", 1, Arc::new(AtomicU64::new(1)), &[]).await.unwrap_err();
         assert_eq!(e.code, "no_sources");
 
         let none = server_with(vec![
@@ -591,7 +617,7 @@ mod tests {
         ])
         .await;
         let a: Arc<dyn SourceAdapter> = Arc::new(Suwayomi::new(&none.uri(), None).unwrap());
-        let out = search_all(a, "x", 1, Arc::new(AtomicU64::new(1))).await.unwrap();
+        let out = search_all(a, "x", 1, Arc::new(AtomicU64::new(1)), &[]).await.unwrap();
         assert!(out.groups.is_empty());
         assert_eq!(out.online_sources, 0);
         assert_eq!(out.website_sources, 0);
@@ -606,7 +632,7 @@ mod tests {
         ])
         .await;
         let a: Arc<dyn SourceAdapter> = Arc::new(Suwayomi::new(&server.uri(), None).unwrap());
-        let out = search_all(a, "t", 1, Arc::new(AtomicU64::new(2))).await.unwrap();
+        let out = search_all(a, "t", 1, Arc::new(AtomicU64::new(2)), &[]).await.unwrap();
         assert!(out.cancelled);
         assert!(out.groups.is_empty());
     }

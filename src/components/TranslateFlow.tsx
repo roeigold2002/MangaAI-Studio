@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errMessage } from "../lib/api";
 import { toast, useApp } from "../lib/store";
-import { chapterTranslationBadge } from "../lib/util";
+import { chapterTranslationBadge, langName } from "../lib/util";
 import { Field, Modal, Spinner } from "./ui";
 import { TranslateDialog } from "./TranslateDialog";
 import type { ChapterInfo, ProviderStatus } from "../lib/types";
@@ -133,6 +133,15 @@ export function TranslateFlow({ chapters, preselect, onClose }: { chapters: Chap
   const [step, setStep] = useState<"check" | "setup" | "pick" | "confirm">("check");
   const untranslated = chapters.filter((c) => c.translation.done < c.page_count);
   const [sel, setSel] = useState<Set<number>>(new Set(preselect ?? (untranslated[0] ? [untranslated[0].id] : [])));
+  const [lang, setLang] = useState<string | null>(null);
+  useEffect(() => {
+    if (chapters[0]) api.mangaDetail(chapters[0].manga_id).then((m) => setLang(m.source_lang)).catch(() => {});
+  }, [chapters]);
+  const langWarning = lang && lang !== "ja" ? (
+    <div className="callout bad small">
+      המנגה הזו ב{langName(lang)}. זיהוי הטקסט (OCR) תומך כרגע רק בעמודים ביפנית, ולכן התרגום של העמודים האלה צפוי להיכשל או לצאת שגוי.
+    </div>
+  ) : null;
 
   useEffect(() => {
     api.providerStatus().then((s) => {
@@ -146,13 +155,14 @@ export function TranslateFlow({ chapters, preselect, onClose }: { chapters: Chap
   if (step === "setup") {
     return <ProviderSetup status={status} onClose={onClose} onDone={() => setStep(preselect && preselect.length ? "confirm" : "pick")} />;
   }
-  if (step === "confirm") return <TranslateDialog chapterIds={[...sel]} onClose={onClose} />;
+  if (step === "confirm") return <TranslateDialog chapterIds={[...sel]} onClose={onClose} warning={langWarning} />;
   return (
     <Modal title="אילו פרקים לתרגם?" onClose={onClose}
       actions={<>
         <button className="btn ghost" onClick={onClose}>ביטול</button>
         <button className="btn primary" disabled={!sel.size} onClick={() => setStep("confirm")}>המשך ({sel.size})</button>
       </>}>
+      {langWarning}
       <div className="row wrap">
         <button className="btn sm ghost" onClick={() => setSel(new Set(untranslated.map((c) => c.id)))}>כל מה שעוד לא תורגם ({untranslated.length})</button>
         <button className="btn sm ghost" onClick={() => setSel(new Set())}>ניקוי</button>

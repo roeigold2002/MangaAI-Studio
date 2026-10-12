@@ -230,6 +230,9 @@ pub struct SourceSettings {
     /// The app installed Suwayomi itself and starts/stops it.
     pub managed: bool,
     pub managed_port: u16,
+    /// Source languages to search, in order of preference (multi-language extensions
+    /// such as MangaDex install one source per language).
+    pub languages: Vec<String>,
 }
 
 impl Default for SourceSettings {
@@ -241,6 +244,7 @@ impl Default for SourceSettings {
             download_concurrency: 2,
             managed: false,
             managed_port: 4567,
+            languages: vec!["ja".into(), "en".into()],
         }
     }
 }

@@ -8,8 +8,9 @@ import type { Estimate } from "../lib/types";
 
 /** Estimate → (confirm if needed) → enqueue. Shows what leaves the computer. */
 export function TranslateDialog({
-  chapterIds, pageIds, mode = "missing", priority = 0, onClose, onQueued,
+  chapterIds, pageIds, mode = "missing", priority = 0, onClose, onQueued, warning,
 }: {
+  warning?: React.ReactNode;
   chapterIds: number[]; pageIds?: number[]; mode?: "missing" | "failed" | "all"; priority?: number;
   onClose: () => void; onQueued?: () => void;
 }) {
@@ -63,6 +64,7 @@ export function TranslateDialog({
         </>
       }
     >
+      {warning}
       {!est && !error && <Spinner label="מחשב הערכה…" />}
       {error && <div className="callout bad">{error}</div>}
       {est && (

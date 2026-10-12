@@ -3,7 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Search as SearchIcon, X } from "lucide-react";
 import { api, errCode, errMessage } from "../lib/api";
 import { useLoad } from "../lib/store";
-import { remoteUrl } from "../lib/util";
+import { langName, remoteUrl } from "../lib/util";
+import { useApp } from "../lib/store";
 import { Empty, Spinner } from "../components/ui";
 import { SourceGate, sourceState } from "../components/SourceGate";
 import type { SearchGroup, SearchOutcome } from "../lib/types";
@@ -62,6 +63,12 @@ export default function SearchPage() {
         {q && <button className="btn ghost icon sm clear" onClick={() => setQ("")} aria-label="ניקוי"><X size={16} /></button>}
       </div>
 
+      {canSearch && (
+        <p className="small faint" style={{ marginTop: 8 }}>
+          מחפש במקורות ב{useApp.getState().settings!.sources.languages.map(langName).join(", ") || "כל השפות"}.{" "}
+          <a href="#/settings?tab=sources" style={{ textDecoration: "underline" }}>שינוי שפות</a>
+        </p>
+      )}
       {!overview.loading && !canSearch && <div style={{ marginTop: 18 }}><SourceGate overview={overview.data} onChange={overview.reload} /></div>}
       {state === "local_only" && q.trim() && (
         <p className="small faint" style={{ marginTop: 10 }}>

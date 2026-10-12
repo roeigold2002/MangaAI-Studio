@@ -4,7 +4,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { Compass, Download, FolderOpen, Plus, Power, RefreshCw, Search, Trash2 } from "lucide-react";
 import { api, errMessage } from "../lib/api";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
-import { remoteUrl } from "../lib/util";
+import { langName, remoteUrl } from "../lib/util";
 import { Empty, ErrorBox, Field, Modal, Spinner } from "./ui";
 import { SourceGate, sourceState } from "./SourceGate";
 import type { Extension, InstalledSource, SourcePreference } from "../lib/types";
@@ -84,6 +84,17 @@ function EngineAndConnection({ onChanged }: { onChanged: () => void }) {
         <Field label="סיסמה" hint="נשמרת ב-Keychain"><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
         <Field label="הורדות במקביל" hint="נכנס לתוקף אחרי הפעלה מחדש"><input className="input" type="number" min={1} max={6} value={s.download_concurrency} onChange={(e) => setS({ ...s, download_concurrency: Number(e.target.value) })} /></Field>
       </div>
+      <Field label="שפות לחיפוש" hint="מקורות כמו MangaDex מותקנים כמקור נפרד לכל שפה. החיפוש רץ רק על השפות שנבחרו. זיהוי הטקסט לתרגום תומך כרגע ביפנית.">
+        <div className="row wrap">
+          {["ja", "en", "ko", "zh-Hans", "zh-Hant", "es", "fr", "pt-BR", "ru", "he"].map((l) => (
+            <label key={l} className="check small">
+              <input type="checkbox" checked={s.languages.includes(l)}
+                onChange={(e) => setS({ ...s, languages: e.target.checked ? [...s.languages, l] : s.languages.filter((x) => x !== l) })} />
+              {langName(l)}
+            </label>
+          ))}
+        </div>
+      </Field>
       <div className="row wrap" style={{ marginTop: 12 }}>
         <button className="btn" onClick={saveAndTest} disabled={busy}>{busy ? <Spinner label="בודק…" /> : "שמירה ובדיקת חיבור"}</button>
         {s.managed && (

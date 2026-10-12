@@ -91,6 +91,14 @@ export function publicationStatus(s: string | null | undefined): string {
   return ({ ONGOING: "בהמשכים", COMPLETED: "הסתיים", CANCELLED: "בוטל", ON_HIATUS: "בהפסקה", LICENSED: "ברישיון", PUBLISHING_FINISHED: "הסתיים" } as Record<string, string>)[s ?? ""] ?? "";
 }
 
+export const LANG_NAMES: Record<string, string> = {
+  ja: "יפנית", en: "אנגלית", ko: "קוריאנית", zh: "סינית", "zh-Hans": "סינית מפושטת", "zh-Hant": "סינית מסורתית",
+  he: "עברית", es: "ספרדית", "es-419": "ספרדית (אמ״ל)", fr: "צרפתית", de: "גרמנית", it: "איטלקית", pt: "פורטוגזית",
+  "pt-BR": "פורטוגזית (ברזיל)", ru: "רוסית", ar: "ערבית", id: "אינדונזית", vi: "וייטנאמית", th: "תאית", tr: "טורקית", pl: "פולנית",
+  all: "כל השפות",
+};
+export const langName = (code: string) => LANG_NAMES[code] ?? code;
+
 export const jobLabel: Record<string, string> = {
   queued: "בתור", running: "בעבודה", paused: "מושהה", done: "הושלם", failed: "הסתיים עם שגיאות", cancelled: "בוטל",
 };
