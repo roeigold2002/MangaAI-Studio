@@ -63,5 +63,7 @@ ARCHITECTURE.md, docs/DECISIONS.md, docs/UPSTREAM_EVALUATION.md, THIRDPARTYNOTIC
 - ☑ Linux: Rust core (70 tests) and worker (17 tests, libraqm available) pass in a Debian bookworm
   aarch64 container with the Tauri/WebKitGTK build dependencies
 - ☑ AI engine installer (in-app and `scripts/setup-worker.sh`)
+- ☑ Windows: cross-compiled from a Debian container (x86_64-pc-windows-gnu, MinGW): the app links into
+  `mangaai-studio.exe` (PE32+ GUI x86-64) and the test binaries link. Running them needs a Windows host.
 - Not possible on this machine: Apple notarization (requires a paid Developer ID) and Windows testing
   (no Windows host). The code paths are platform-neutral (keyring has Windows support, worker uses `Scripts/python.exe`).

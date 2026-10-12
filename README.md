@@ -161,4 +161,5 @@ cd src-tauri && cargo run --example suwayomi_live -- http://127.0.0.1:4567 local
   list, browse, search, chapters, download, cancel/retry, dedupe). Third-party extensions behave
   like any Suwayomi source but were not tried.
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
-  was not run there. Windows was not tested (no Windows machine available).
+  was not run there. Windows: the app and its test binaries cross-compile and link for x86_64 Windows (MinGW), but
+  were not run (no Windows machine available).
