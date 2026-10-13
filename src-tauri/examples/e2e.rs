@@ -61,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
     db.with(|c| {
         // Pepper&Carrot is a western comic: left-to-right
         c.execute("UPDATE manga SET reading_dir = 'ltr'", [])?;
+        // MANGAAI_E2E_LANG=en: treat the pages as non-Japanese (text read from the image by the model)
+        if let Ok(l) = std::env::var("MANGAAI_E2E_LANG") {
+            c.execute("UPDATE manga SET source_lang = ?1", [l])?;
+        }
         Ok(())
     })
     .map_err(|e| anyhow::anyhow!(e.message))?;

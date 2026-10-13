@@ -144,7 +144,8 @@ def ocr_box(img: Image.Image, box: Box, device: str) -> tuple[str, float | None]
     return _ocr_crop(crop, device)
 
 
-def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35, rtl: bool = True) -> dict:
+def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35, rtl: bool = True, ocr: bool = True) -> dict:
+    """ocr=False: detection only (pages not in Japanese); the translator reads the text from the image."""
     t0 = time.time()
     device = models.pick_device(device_pref)
     img = Image.open(image_path)
@@ -187,14 +188,14 @@ def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35,
         # OCR each piece in reading order (vertical Japanese columns read right-to-left).
         order = sorted(range(len(boxes)), key=lambda i: (-boxes[i][2], boxes[i][1])) if vertical else reading_order(boxes, rtl)
         parts, confs = [], []
-        for i in order:
+        for i in (order if ocr else []):
             text, conf = ocr_box(img, boxes[i], device)
             if text:
                 parts.append(text)
                 if conf is not None:
                     confs.append(conf)
         text = "".join(parts) if vertical else " ".join(parts)
-        if not text.strip():
+        if ocr and not text.strip():
             continue
         conf = float(min(confs)) if confs else None
         regions.append({

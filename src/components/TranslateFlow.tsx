@@ -138,8 +138,9 @@ export function TranslateFlow({ chapters, preselect, onClose }: { chapters: Chap
     if (chapters[0]) api.mangaDetail(chapters[0].manga_id).then((m) => setLang(m.source_lang)).catch(() => {});
   }, [chapters]);
   const langWarning = lang && lang !== "ja" ? (
-    <div className="callout bad small">
-      המנגה הזו ב{langName(lang)}. זיהוי הטקסט (OCR) תומך כרגע רק בעמודים ביפנית, ולכן התרגום של העמודים האלה צפוי להיכשל או לצאת שגוי.
+    <div className="callout small">
+      המנגה הזו ב{langName(lang)}. הבועות מזוהות במחשב, ואת הטקסט עצמו מודל התרגום קורא מתוך תמונת העמוד. לכן נדרש ספק שמקבל תמונות,
+      ותמונות העמודים יישלחו אליו. אפשר לתקן בעורך את הטקסט שהמודל קרא.
     </div>
   ) : null;
 

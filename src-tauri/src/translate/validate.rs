@@ -8,6 +8,9 @@ use super::prompt::{CATEGORIES, GLOSSARY_KINDS};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ItemOut {
     pub id: String,
+    /// Original text as read by the model (used when no OCR text was provided).
+    #[serde(default)]
+    pub source: String,
     pub translation: String,
     pub category: String,
     #[serde(default)]

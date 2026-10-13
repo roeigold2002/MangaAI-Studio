@@ -3,7 +3,7 @@
 
 use serde_json::{json, Value};
 
-pub const PROMPT_VERSION: &str = "he-v1";
+pub const PROMPT_VERSION: &str = "he-v2";
 
 pub const CATEGORIES: &[&str] = &["dialogue", "thought", "narration", "sfx", "sign", "other"];
 pub const GLOSSARY_KINDS: &[&str] = &["character", "term", "place", "attack", "organization", "honorific", "other"];
@@ -19,9 +19,10 @@ pub fn schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["id", "translation", "category", "speaker", "confidence", "note"],
+                    "required": ["id", "source", "translation", "category", "speaker", "confidence", "note"],
                     "properties": {
                         "id": {"type": "string"},
+                        "source": {"type": "string"},
                         "translation": {"type": "string"},
                         "category": {"type": "string", "enum": CATEGORIES},
                         "speaker": {"type": "string"},
@@ -93,8 +94,11 @@ Goals:
 - {sfx}
 {hebrew}
 
+Some items come without OCR text ("no OCR"): read the original text yourself from the page image inside the given area (percent of the page width/height), then translate it. If that area holds no readable text, return empty `source` and `translation`.
+
 Output: JSON only, matching the provided schema.
 - `translations`: exactly one entry per input id, same ids, nothing else.
+- `source`: the original text of the item as you read it (copy the given OCR text when it was provided).
 - `speaker`: character name if you can tell, otherwise "".
 - `confidence`: "high" normally; "medium"/"low" when unsure (OCR or meaning). `note`: short reason, or "".
 - `glossary_suggestions`: new recurring names/terms worth fixing for the whole series (not already in the glossary), with your {tgt} rendering; [] if none.

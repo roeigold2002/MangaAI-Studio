@@ -50,6 +50,15 @@ pub struct PageCtx {
     pub source_lang: String,
     pub rtl: bool,
     pub translation_notes: String,
+    pub width: i64,
+    pub height: i64,
+}
+
+impl PageCtx {
+    /// Japanese pages get local OCR; other languages are read from the image by the translator.
+    pub fn local_ocr(&self) -> bool {
+        self.source_lang == "ja"
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,7 +99,7 @@ pub fn load_page(db: &Db, page_id: i64, default_rtl: bool) -> AppResult<PageCtx>
     db.with(|c| {
         Ok(c.query_row(
             "SELECT p.id, p.chapter_id, ch.manga_id, p.idx, p.path, p.sha256, p.mime, ch.container, ch.location,
-                    m.title, m.source_lang, m.reading_dir, m.translation_notes
+                    m.title, m.source_lang, m.reading_dir, m.translation_notes, p.width, p.height
              FROM page p JOIN chapter ch ON ch.id = p.chapter_id JOIN manga m ON m.id = ch.manga_id WHERE p.id = ?1",
             [page_id],
             |r| {
@@ -109,6 +118,8 @@ pub fn load_page(db: &Db, page_id: i64, default_rtl: bool) -> AppResult<PageCtx>
                     source_lang: r.get(10)?,
                     rtl: dir.map(|d| d != "ltr").unwrap_or(default_rtl),
                     translation_notes: r.get(12)?,
+                    width: r.get(13)?,
+                    height: r.get(14)?,
                 })
             },
         )?)
@@ -236,7 +247,10 @@ pub fn translation_key(page: &PageCtx, regions: &[RegionRow], cfg: &ProviderConf
         format!("img={}", cfg.send_images),
     ];
     for r in regions {
-        parts.push(format!("{}|{}|{}", r.rid, r.source(), r.skip));
+        // Pages read from the image: the model's own reading is stored as ocr_text after
+        // translating, so only a user correction (source_text) may change the key.
+        let src = if page.local_ocr() { r.source() } else { r.source_text.as_deref().unwrap_or("") };
+        parts.push(format!("{}|{}|{}", r.rid, src, r.skip));
     }
     let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
     sha256_str(&refs)
@@ -291,13 +305,19 @@ impl Engine {
 
     pub async fn analyze(&self, p: &PageCtx, s: &AppSettings, force: bool) -> AppResult<()> {
         let (av, _, _) = self.vision.versions();
-        let key = sha256_str(&[&p.sha256, &av, &format!("{:.2}", s.ocr.detector_threshold), if p.rtl { "rtl" } else { "ltr" }]);
+        let key = sha256_str(&[
+            &p.sha256,
+            &av,
+            &format!("{:.2}", s.ocr.detector_threshold),
+            if p.rtl { "rtl" } else { "ltr" },
+            if p.local_ocr() { "ocr" } else { "vision-read" },
+        ]);
         let st = page_state(&self.db, p.page_id)?;
         if !force && st.analysis_key.as_deref() == Some(key.as_str()) {
             return Ok(());
         }
         let src = self.source_file(p)?;
-        let analysis = self.vision.analyze(&src, p.rtl, s.ocr.detector_threshold, &s.ocr.device).await?;
+        let analysis = self.vision.analyze(&src, p.rtl, s.ocr.detector_threshold, &s.ocr.device, p.local_ocr()).await?;
         self.store_analysis(p.page_id, &analysis.regions, &key)?;
         Ok(())
     }
@@ -450,9 +470,10 @@ impl Engine {
             let regions = load_regions(&self.db, p.page_id)?;
             let key = translation_key(p, &regions, cfg, s, &gv);
             let st = page_state(&self.db, p.page_id)?;
+            let read_from_image = !p.local_ocr();
             let pending: Vec<&RegionRow> = regions
                 .iter()
-                .filter(|r| !r.approved && !r.skip && !r.source().trim().is_empty())
+                .filter(|r| !r.approved && !r.skip && (read_from_image || !r.source().trim().is_empty()))
                 .filter(|r| force || st.translation_key.as_deref() != Some(key.as_str()) || r.translation.is_none())
                 .collect();
             if pending.is_empty() {
@@ -471,7 +492,8 @@ impl Engine {
             // Exact matches in translation memory are reused without asking the model.
             let mut ask = vec![];
             for r in pending {
-                if let Some(tm) = memory::lookup(&self.db, p.manga_id, r.source())? {
+                let has_text = !r.source().trim().is_empty();
+                if let Some(tm) = if has_text { memory::lookup(&self.db, p.manga_id, r.source())? } else { None } {
                     if !force {
                         self.save_translation(r, &tm, None, None, Some("high"), Some("translation memory"))?;
                         continue;
@@ -484,9 +506,21 @@ impl Engine {
                     kind: r.kind.clone(),
                     vertical: r.vertical,
                     uncertain: r.uncertain(),
+                    area: (!has_text).then(|| percent_area(r.bubble.unwrap_or(r.bbox), p.width, p.height)),
                 });
             }
-            let image = if cfg.send_images && provider.capabilities().vision && !ask.is_empty() {
+            let needs_image = ask.iter().any(|a| a.area.is_some());
+            if needs_image && !(cfg.send_images && provider.capabilities().vision) {
+                let msg = format!(
+                    "pages in this language are read from the image by the translator, but {} — turn on \"send page images\" for a provider that accepts images",
+                    if provider.capabilities().vision { "sending images is off" } else { "this provider does not accept images" }
+                );
+                set_status(&self.db, p.page_id, "failed", Some("translate"), Some(&msg))?;
+                outcome.failed.push((p.page_id, msg));
+                self.emit_page(p);
+                continue;
+            }
+            let image = if (cfg.send_images || needs_image) && provider.capabilities().vision && !ask.is_empty() {
                 match self.page_image(p) {
                     Ok(i) => Some(i),
                     Err(e) => {
@@ -550,6 +584,13 @@ impl Engine {
                     let id = format!("{prefix}{}", r.rid);
                     if let Some(item) = v.out.translations.iter().find(|t| t.id == id) {
                         self.save_translation(r, &item.translation, Some(&item.category), Some(&item.speaker), Some(&item.confidence), Some(&item.note))?;
+                        // keep the text the model read (no local OCR for this language)
+                        if r.ocr_text.trim().is_empty() && !item.source.trim().is_empty() {
+                            self.db.with(|c| {
+                                c.execute("UPDATE region SET ocr_text = ?1 WHERE id = ?2", params![item.source.trim(), r.id])?;
+                                Ok(())
+                            })?;
+                        }
                     } else if v.missing.contains(&id) {
                         missing += 1;
                     }
@@ -769,6 +810,13 @@ impl Engine {
         }
         Ok(outcome)
     }
+}
+
+/// Box in pixels → percent of the page (what the translator sees on a scaled image).
+fn percent_area(b: [i64; 4], w: i64, h: i64) -> [u32; 4] {
+    let (w, h) = (w.max(1) as f64, h.max(1) as f64);
+    let pct = |v: i64, d: f64| ((v.max(0) as f64 / d) * 100.0).round().clamp(0.0, 100.0) as u32;
+    [pct(b[0], w), pct(b[1], h), pct(b[2], w), pct(b[3], h)]
 }
 
 fn iou(a: [i64; 4], b: [i64; 4]) -> f64 {

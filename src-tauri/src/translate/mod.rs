@@ -19,6 +19,9 @@ pub struct RegionInput {
     pub kind: String,
     pub vertical: bool,
     pub uncertain: bool,
+    /// No OCR text: the model reads the text inside this area of the page image
+    /// (percent of width/height: x1, y1, x2, y2).
+    pub area: Option<[u32; 4]>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +89,14 @@ pub fn user_message(ctx: &Context, pages: &[PageInput]) -> String {
             if r.uncertain {
                 flags.push("OCR uncertain");
             }
-            s.push_str(&format!("[{}] ({}) {}\n", r.id, flags.join(", "), r.text.replace('\n', " ")));
+            match r.area {
+                Some([x1, y1, x2, y2]) => s.push_str(&format!(
+                    "[{}] ({}, no OCR: read the text in the page image at x {x1}–{x2}%, y {y1}–{y2}%)\n",
+                    r.id,
+                    flags.join(", ")
+                )),
+                None => s.push_str(&format!("[{}] ({}) {}\n", r.id, flags.join(", "), r.text.replace('\n', " "))),
+            }
         }
     }
     s
@@ -240,7 +250,7 @@ mod tests {
             page_no: 1,
             regions: ids
                 .iter()
-                .map(|i| RegionInput { id: i.to_string(), text: "テスト".into(), kind: "bubble".into(), vertical: true, uncertain: false })
+                .map(|i| RegionInput { id: i.to_string(), text: "テスト".into(), kind: "bubble".into(), vertical: true, uncertain: false, area: None })
                 .collect(),
             image: None,
         }

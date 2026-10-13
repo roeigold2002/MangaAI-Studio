@@ -52,14 +52,14 @@ pub struct StageResult {
 #[async_trait]
 pub trait Vision: Send + Sync {
     async fn health(&self) -> AppResult<Value>;
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str) -> AppResult<Analysis>;
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis>;
     async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str) -> AppResult<(String, Option<f64>)>;
     async fn clean(&self, image: &Path, out: &Path, regions: Value, method: &str, device: &str) -> AppResult<StageResult>;
     async fn render(&self, clean: &Path, out: &Path, regions: Value, settings: Value) -> AppResult<StageResult>;
     async fn prepare_models(&self) -> AppResult<Value>;
     /// Version strings that are part of cache keys.
     fn versions(&self) -> (String, String, String) {
-        ("a1".into(), "i1".into(), "r1".into())
+        ("a2".into(), "i1".into(), "r1".into())
     }
 }
 
@@ -212,11 +212,11 @@ impl Vision for PythonWorker {
         self.call("health", json!({}), Duration::from_secs(60)).await
     }
 
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str) -> AppResult<Analysis> {
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis> {
         let v = self
             .call(
                 "analyze",
-                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device}),
+                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device, "ocr": ocr}),
                 Duration::from_secs(600),
             )
             .await?;
@@ -319,9 +319,13 @@ pub mod fake {
         async fn health(&self) -> AppResult<Value> {
             Ok(json!({"raqm": true}))
         }
-        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str) -> AppResult<Analysis> {
-            self.calls.lock().push("analyze".into());
-            Ok(Analysis { version: "a1".into(), width: 100, height: 100, regions: self.regions.clone() })
+        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str, ocr: bool) -> AppResult<Analysis> {
+            self.calls.lock().push(format!("analyze:ocr={ocr}"));
+            let mut regions = self.regions.clone();
+            if !ocr {
+                regions.iter_mut().for_each(|r| { r.text.clear(); r.confidence = None; });
+            }
+            Ok(Analysis { version: "a2".into(), width: 100, height: 100, regions })
         }
         async fn ocr_region(&self, _image: &Path, _b: [i64; 4], _d: &str) -> AppResult<(String, Option<f64>)> {
             self.calls.lock().push("ocr_region".into());

@@ -309,6 +309,52 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn non_japanese_pages_are_read_from_the_image() {
+        let (_d, engine, fake, _ch) = setup(&["ignored", "ignored"]);
+        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'en'", [])?; Ok(()) }).unwrap();
+        let s = AppSettings::default();
+        let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
+        let p = load_page(&engine.db, page_id, true).unwrap();
+        let reply = json!({"translations": [
+            {"id": "p1r1", "source": "Where am I?", "translation": "איפה אני?", "category": "dialogue", "speaker": "", "confidence": "high", "note": ""},
+            {"id": "p1r2", "source": "", "translation": "", "category": "other", "speaker": "", "confidence": "low", "note": "no text"}
+        ], "glossary_suggestions": [], "page_notes": ""}).to_string();
+        let mock = MockProvider::new(vec![Ok(reply)]);
+        let mut c = cfg();
+        c.send_images = true;
+        engine.process_batch(&[p], &s, &c, mock.clone(), None, false).await.unwrap();
+        assert!(fake.calls.lock().iter().any(|x| x == "analyze:ocr=false"), "no Japanese OCR for English pages");
+        let req = mock.requests.lock()[0].clone();
+        assert!(req.user.contains("no OCR: read the text in the page image at x"));
+        assert_eq!(req.images.len(), 1, "the page image is required");
+        let regs = load_regions(&engine.db, page_id).unwrap();
+        assert_eq!(regs[0].ocr_text, "Where am I?", "the text the model read is kept for the editor");
+        assert_eq!(regs[0].translation.as_deref(), Some("איפה אני?"));
+        assert_eq!(page_state(&engine.db, page_id).unwrap().status, "done");
+        // reopening must not pay again even though the read text was stored
+        let p = load_page(&engine.db, page_id, true).unwrap();
+        engine.process_batch(&[p], &s, &c, mock.clone(), None, false).await.unwrap();
+        assert_eq!(mock.requests.lock().len(), 1, "cached: no second request");
+    }
+
+    #[tokio::test]
+    async fn reading_from_image_without_images_fails_honestly() {
+        let (_d, engine, _fake, _ch) = setup(&["x"]);
+        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'en'", [])?; Ok(()) }).unwrap();
+        let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
+        let p = load_page(&engine.db, page_id, true).unwrap();
+        let mock = MockProvider::new(vec![]);
+        let mut c = cfg();
+        c.send_images = false;
+        let out = engine.process_batch(&[p], &AppSettings::default(), &c, mock.clone(), None, false).await.unwrap();
+        assert_eq!(out.failed.len(), 1);
+        assert!(mock.requests.lock().is_empty(), "nothing sent");
+        let st = page_state(&engine.db, page_id).unwrap();
+        assert_eq!(st.status, "failed");
+        assert!(st.error.unwrap().contains("send page images"));
+    }
+
+    #[tokio::test]
     async fn restore_original_and_rerender() {
         let (_d, engine, _fake, _ch) = setup(&["あ"]);
         let s = AppSettings::default();
