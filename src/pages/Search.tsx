@@ -145,6 +145,7 @@ function ResultGrid({ groups }: { groups: SearchGroup[] }) {
         const n = counts[first.manga.manga_ref];
         return (
           <div key={`${first.source_id}-${first.manga.manga_ref}-${i}`} className="cover-card" role="link" tabIndex={0}
+            style={n === 0 ? { opacity: 0.5 } : undefined}
             onClick={() => nav(`/title/${encodeURIComponent(first.manga.manga_ref)}`, { state: { group: g } })}
             onKeyDown={(e) => e.key === "Enter" && nav(`/title/${encodeURIComponent(first.manga.manga_ref)}`, { state: { group: g } })}>
             <div className="cover">
@@ -156,7 +157,7 @@ function ResultGrid({ groups }: { groups: SearchGroup[] }) {
             <div>
               <div className="cover-title" dir="auto">{g.title}</div>
               <div className="cover-sub" dir="auto">
-                {typeof n === "number" ? `${n} פרקים` : n === "err" ? "" : i < 12 ? "סופר פרקים…" : ""}
+                {n === 0 ? "אין פרקים זמינים במקור הזה" : typeof n === "number" ? `${n} פרקים` : n === "err" ? "" : i < 12 ? "סופר פרקים…" : ""}
               </div>
               <div className="cover-sub" dir="auto">{g.entries.map((e) => e.source_name).join(", ")}</div>
               {g.description && <div className="cover-desc" dir="auto">{g.description}</div>}

@@ -85,7 +85,11 @@ export default function TitlePage() {
       </div>
       {error && /no chapters/i.test(error) ? (
         <div className="callout col" style={{ gap: 8 }}>
-          <span>המקור הזה לא מצא פרקים לכותר. במקורות כמו MangaDex כל שפה היא מקור נפרד, ובשפה הזו אין פרקים.</span>
+          <span>
+            אין במקור הזה פרקים שאפשר להוריד לכותר הזה. ב-MangaDex זה קורה בעיקר בסדרות עם רישיון רשמי (למשל Dragon Ball):
+            הפרקים הוסרו או מפנים לאתר של המו״ל, ולכן אין עמודים להורדה. לפעמים יש פרקים בשפה אחרת (כל שפה היא מקור נפרד),
+            ולפעמים צריך תוסף מקור אחר מחנות התוספים.
+          </span>
           {group && group.entries.length > 1 && (
             <div className="row wrap">
               <span className="small muted">לנסות בשפה אחרת:</span>

@@ -872,7 +872,12 @@ pub async fn search_all(st: State<'_, AppState>, query: String, generation: u64)
 
 #[tauri::command]
 pub async fn remote_chapter_count(st: State<'_, AppState>, manga_ref: String) -> R<usize> {
-    Ok(make_adapter(&st.db, st.secrets.as_ref())?.chapters(&manga_ref).await?.len())
+    match make_adapter(&st.db, st.secrets.as_ref())?.chapters(&manga_ref).await {
+        Ok(c) => Ok(c.len()),
+        // the source answers "No chapters found" for titles with nothing to read
+        Err(e) if e.message.to_lowercase().contains("no chapters") => Ok(0),
+        Err(e) => Err(e),
+    }
 }
 
 #[tauri::command]
