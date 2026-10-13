@@ -150,3 +150,22 @@ def test_protocol_roundtrip():
     assert lines[0]["id"] == 1 and lines[0]["ok"] and lines[0]["result"]["protocol"] == 1
     assert lines[1]["id"] == 2 and not lines[1]["ok"]
     assert lines[2]["id"] == 3 and lines[2]["ok"]
+
+
+def test_tight_text_box_in_round_bubble_on_dark_page(tmp_path):
+    """Regression: detector boxes hug the text, so letters touch the box border. The text must
+    still be erased, and nothing outside the round bubble (dark art, outline) may be painted."""
+    src = tmp_path / "page.png"
+    im = Image.new("RGB", (400, 300), "black")
+    d = ImageDraw.Draw(im)
+    d.ellipse((60, 40, 340, 260), fill="white", outline="black", width=4)
+    for i in range(3):  # three "lines of text" touching the text box edges
+        d.rectangle((140, 110 + i * 30, 260, 124 + i * 30), fill="black")
+    im.save(src)
+    out = tmp_path / "clean.png"
+    res = clean(str(src), str(out), [{"rid": "r1", "kind": "bubble", "bbox": [140, 110, 260, 184], "bubble": [60, 40, 340, 260]}], "lama")
+    assert res["methods"] == ["fill"]
+    arr = np.array(Image.open(out).convert("L"))
+    assert arr[110:185, 140:261].min() > 200, "text erased"
+    assert arr[45, 70] < 50 and arr[255, 330] < 50, "dark corners outside the bubble untouched"
+    assert arr[150, 61:66].min() < 80, "bubble outline kept"
