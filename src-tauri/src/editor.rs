@@ -355,6 +355,26 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn switching_sfx_mode_redraws_without_new_requests() {
+        let (_d, engine, fake, _ch) = setup(&["ドーン", "やあ"]);
+        let mut s = AppSettings::default();
+        s.translation.sfx_mode = "keep".into();
+        let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
+        let p = load_page(&engine.db, page_id, true).unwrap();
+        let reply = json!({"translations": [
+            {"id": "p1r1", "source": "", "translation": "בום", "category": "sfx", "speaker": "", "confidence": "high", "note": ""},
+            {"id": "p1r2", "source": "", "translation": "היי", "category": "dialogue", "speaker": "", "confidence": "high", "note": ""}
+        ], "glossary_suggestions": [], "page_notes": ""}).to_string();
+        let mock = MockProvider::new(vec![Ok(reply)]);
+        engine.process_batch(&[p.clone()], &s, &cfg(), mock.clone(), None, false).await.unwrap();
+        assert!(fake.calls.lock().contains(&"render:1".to_string()), "keep: SFX not drawn");
+        s.translation.sfx_mode = "translate".into();
+        engine.process_batch(&[p], &s, &cfg(), mock.clone(), None, false).await.unwrap();
+        assert_eq!(mock.requests.lock().len(), 1, "no new translation request");
+        assert!(fake.calls.lock().contains(&"render:2".to_string()), "translate: SFX drawn");
+    }
+
+    #[tokio::test]
     async fn restore_original_and_rerender() {
         let (_d, engine, _fake, _ch) = setup(&["あ"]);
         let s = AppSettings::default();

@@ -242,7 +242,9 @@ pub fn translation_key(page: &PageCtx, regions: &[RegionRow], cfg: &ProviderConf
         cfg.model.clone(),
         glossary_version.into(),
         s.translation.target_lang.clone(),
-        s.translation.sfx_mode.clone(),
+        // SFX are translated in both modes; the mode only decides whether they are drawn.
+        // A constant keeps existing keys valid, so switching the mode never re-charges.
+        "keep".to_string(),
         page.source_lang.clone(),
         format!("img={}", cfg.send_images),
     ];

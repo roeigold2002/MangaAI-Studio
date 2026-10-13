@@ -78,7 +78,7 @@ impl Default for TranslationSettings {
             context_lines: 40,
             confirm_cost_above_usd: 1.0,
             job_cost_limit_usd: 0.0,
-            sfx_mode: "keep".into(),
+            sfx_mode: "translate".into(),
             local_only: false,
             auto_translate_next: false,
         }
