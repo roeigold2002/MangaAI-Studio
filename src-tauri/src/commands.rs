@@ -124,7 +124,16 @@ pub fn set_chapters_read(st: State<'_, AppState>, chapter_ids: Vec<i64>, read: b
 
 #[tauri::command]
 pub fn save_progress(st: State<'_, AppState>, chapter_id: i64, page_idx: i64) -> R<()> {
-    queries::save_progress(&st.db, chapter_id, page_idx)
+    queries::save_progress(&st.db, chapter_id, page_idx)?;
+    match jobs::translate_ahead(&st.db, chapter_id, page_idx) {
+        Ok(Some(job)) => {
+            tracing::info!(job, chapter_id, "translating the next chapter ahead");
+            st.job_notify.notify_one();
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("translate ahead skipped: {}", e.message),
+    }
+    Ok(())
 }
 
 #[tauri::command]

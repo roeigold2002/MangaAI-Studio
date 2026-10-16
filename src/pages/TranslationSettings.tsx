@@ -86,6 +86,13 @@ export default function TranslationSettingsPage({ embedded = false }: { embedded
             <input type="checkbox" checked={t.local_only} onChange={(e) => setT({ local_only: e.target.checked })} />
             <span>מצב מקומי בלבד: לאפשר רק ספקים שרצים על המחשב (Ollama או שרת מקומי).</span>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={t.auto_translate_next} onChange={(e) => setT({ auto_translate_next: e.target.checked })} />
+            <span>
+              תרגום מראש: כשמגיעים לסוף פרק שמתורגם, הפרק הבא מתורגם ברקע כדי שיהיה מוכן.
+              רק בסדרות שכבר תרגמת, ורק כשההערכה מתחת לסף אישור העלות.
+            </span>
+          </label>
         </div>
       </div>
 

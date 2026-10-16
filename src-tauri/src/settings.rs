@@ -80,7 +80,7 @@ impl Default for TranslationSettings {
             job_cost_limit_usd: 0.0,
             sfx_mode: "translate".into(),
             local_only: false,
-            auto_translate_next: false,
+            auto_translate_next: true,
         }
     }
 }

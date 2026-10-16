@@ -235,6 +235,48 @@ pub struct Runner {
     pub provider_override: Option<Arc<dyn TranslationProvider>>,
 }
 
+/// Reading near the end of a chapter that is being translated queues the next chapter, so it is
+/// ready by the time the reader gets there. Only with `auto_translate_next`, an allowed provider and
+/// an estimate under the confirmation threshold; a series nothing was translated in costs nothing.
+/// Returns the new job id.
+pub fn translate_ahead(db: &Db, chapter_id: i64, page_idx: i64) -> AppResult<Option<i64>> {
+    let s = settings::load(db)?;
+    if !s.translation.auto_translate_next {
+        return Ok(None);
+    }
+    let (total, translating): (i64, bool) = db.with(|c| {
+        let total: i64 = c.query_row("SELECT count(*) FROM page WHERE chapter_id = ?1", [chapter_id], |r| r.get(0))?;
+        let translating: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job WHERE chapter_id = ?1 AND status != 'cancelled')
+                 OR EXISTS(SELECT 1 FROM page p JOIN page_state s ON s.page_id = p.id WHERE p.chapter_id = ?1 AND s.status = 'done')",
+            [chapter_id],
+            |r| r.get(0),
+        )?;
+        Ok((total, translating))
+    })?;
+    let remaining = total - 1 - page_idx;
+    if total == 0 || !translating || remaining > (total / 5).max(2) {
+        return Ok(None);
+    }
+    let Some(next) = crate::library::queries::chapter_view(db, chapter_id)?.next_chapter_id else { return Ok(None) };
+    let busy: bool = db.with(|c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job WHERE chapter_id = ?1 AND status IN ('queued','running','paused'))",
+            [next],
+            |r| r.get(0),
+        )?)
+    })?;
+    let Some(cfg) = s.active_provider().cloned() else { return Ok(None) };
+    if busy || check_provider_allowed(&s, &cfg).is_err() {
+        return Ok(None);
+    }
+    let est = estimate(db, &[next])?;
+    if est.pages_to_translate == 0 || est.needs_confirmation {
+        return Ok(None);
+    }
+    Ok(Some(enqueue(db, next, None, "missing", 0)?))
+}
+
 pub fn check_provider_allowed(s: &AppSettings, cfg: &ProviderConfig) -> AppResult<()> {
     let caps = providers::capabilities_for_kind(&cfg.kind, &cfg.endpoint);
     if s.translation.local_only && !caps.local {
@@ -575,6 +617,47 @@ mod tests {
     use crate::providers::test_support::MockProvider;
     use crate::providers::{ErrorKind, ProviderError};
     use crate::secrets::MemoryStore;
+
+    #[test]
+    fn reading_near_the_end_translates_the_next_chapter_once() {
+        use crate::library::import::import_path;
+        let d = tempfile::tempdir().unwrap();
+        let png = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::new(4, 6).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        for (ch, n) in [("ch1", 10), ("ch2", 6)] {
+            std::fs::create_dir_all(d.path().join("S").join(ch)).unwrap();
+            for i in 1..=n {
+                std::fs::write(d.path().join("S").join(ch).join(format!("{i}.png")), &png).unwrap();
+            }
+        }
+        let db = Db::open_in_memory().unwrap();
+        import_path(&db, &d.path().join("S")).unwrap();
+        let chapters: Vec<i64> = db
+            .with(|c| Ok(c.prepare("SELECT id FROM chapter ORDER BY sort_index")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?))
+            .unwrap();
+        let (ch1, ch2) = (chapters[0], chapters[1]);
+        let mut s = settings::load(&db).unwrap();
+        s.translation.active_provider = "ollama".into(); // local: no cloud notice, no cost
+        settings::save(&db, &s).unwrap();
+        let jobs_for = |ch: i64| -> i64 { db.with(|c| Ok(c.query_row("SELECT count(*) FROM job WHERE chapter_id = ?1", [ch], |r| r.get(0))?)).unwrap() };
+
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "nothing translated in this chapter: no spending");
+        enqueue(&db, ch1, None, "missing", 5).unwrap(); // the user translates chapter 1
+        assert_eq!(translate_ahead(&db, ch1, 3).unwrap(), None, "too early in the chapter");
+        let job = translate_ahead(&db, ch1, 8).unwrap().expect("two pages from the end: next chapter queued");
+        assert_eq!(get(&db, job).unwrap().chapter_id, ch2);
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "already queued: no second job");
+        assert_eq!(jobs_for(ch2), 1);
+
+        set_status(&db, job, "cancelled").unwrap();
+        s.translation.auto_translate_next = false;
+        settings::save(&db, &s).unwrap();
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "switched off");
+        assert_eq!(translate_ahead(&db, ch2, 5).unwrap(), None, "last chapter has no next");
+    }
 
     fn runner(engine: &Engine, provider: Arc<dyn TranslationProvider>) -> Runner {
         Runner {
