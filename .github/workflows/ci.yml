@@ -51,17 +51,22 @@ jobs:
           npm run typecheck
           npm test
 
-      # Pillow loads FriBiDi at run time to shape Hebrew (see scripts/build-fribidi.ps1).
-      - name: FriBiDi cache (Windows)
+      # Bundled Windows resources: FriBiDi (Pillow loads it at run time to shape Hebrew) and the
+      # pinned uv.exe the installer ships. Tauri's build script refuses to build without them.
+      - name: Native resources cache (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v6
         with:
           path: src-tauri/windows/native
-          key: fribidi-${{ hashFiles('scripts/build-fribidi.ps1') }}
+          key: native-${{ hashFiles('scripts/build-fribidi.ps1', 'scripts/fetch-uv.ps1') }}
       - name: Build FriBiDi (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/build-fribidi.ps1 -IfMissing
+      - name: Fetch uv (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/fetch-uv.ps1 -IfMissing
       - name: Install FriBiDi (macOS)
         if: runner.os == 'macOS'
         run: brew install fribidi
