@@ -1,0 +1,141 @@
+name: Release
+
+# Push a version tag (v0.2.0) whose number matches src-tauri/tauri.conf.json. This builds the Windows
+# installer and the macOS app, attaches them to a DRAFT release with the updater files (latest.json and
+# signatures), and stops there. Installed apps see the update only after the draft is published.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag matches the app version
+        run: |
+          app="v$(jq -r .version src-tauri/tauri.conf.json)"
+          crate="v$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)"
+          if [ "$GITHUB_REF_NAME" != "$app" ] || [ "$GITHUB_REF_NAME" != "$crate" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, tauri.conf.json $app, Cargo.toml $crate: bump the version first"
+            exit 1
+          fi
+
+      # The annotated tag's message becomes the release notes shown in the app's update prompt.
+      # (actions/checkout fetches tags as plain commits, so fetch the tag object itself.)
+      - name: Release notes from the tag message
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          notes="$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)')"
+          [ -n "$notes" ] || notes="MangaAI Studio $GITHUB_REF_NAME"
+          printf '%s\n' "$notes" > notes.md
+
+      - name: Create the draft
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$GITHUB_REF_NAME" -f name="MangaAI Studio $GITHUB_REF_NAME" \
+            -F body=@notes.md -F draft=true -F prerelease=false --jq .id)
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # build-fribidi.ps1 (run by the Windows beforeBuildCommand) builds with meson through uvx
+      - uses: astral-sh/setup-uv@v10.3.0
+
+      - run: npm ci
+
+      # Local builds skip the updater files (they need the private key); release builds sign them.
+      - name: Turn on updater artifacts
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs"), f = "src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(f, "utf8"));
+            c.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(f, JSON.stringify(c, null, 2));'
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          # written once below, after both platforms have uploaded (avoids two jobs racing on one file)
+          uploadUpdaterJson: false
+
+  updater-json:
+    name: latest.json
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = Number(process.env.RELEASE_ID);
+            const tag = context.ref.replace("refs/tags/", "");
+            const { data: release } = await github.rest.repos.getRelease({ owner, repo, release_id });
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id });
+            // the updater bundle each platform installs from, next to its .sig
+            const kinds = [["windows-x86_64", /-setup\.exe$/], ["darwin-aarch64", /\.app\.tar\.gz$/]];
+            const platforms = {};
+            for (const [platform, re] of kinds) {
+              const bundle = assets.find((a) => re.test(a.name));
+              const sig = bundle && assets.find((a) => a.name === `${bundle.name}.sig`);
+              if (!sig) throw new Error(`no signed updater bundle for ${platform}; was TAURI_SIGNING_PRIVATE_KEY set?`);
+              const { data } = await github.request("GET /repos/{owner}/{repo}/releases/assets/{asset_id}", {
+                owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" },
+              });
+              platforms[platform] = {
+                signature: Buffer.from(data).toString("utf8").trim(),
+                // tag URL, not browser_download_url: a draft's asset URLs change when it is published
+                url: `https://github.com/${owner}/${repo}/releases/download/${tag}/${bundle.name}`,
+              };
+            }
+            const latest = { version: tag.replace(/^v/, ""), notes: release.body ?? "", pub_date: new Date().toISOString(), platforms };
+            for (const a of assets.filter((a) => a.name === "latest.json")) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: a.id });
+            }
+            await github.rest.repos.uploadReleaseAsset({ owner, repo, release_id, name: "latest.json", data: JSON.stringify(latest, null, 2) });
+            core.info(JSON.stringify(latest, null, 2));

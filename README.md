@@ -80,6 +80,41 @@ npm run app:build
 The bundle is ad-hoc signed (no Apple Developer ID, so not notarized). If macOS blocks the first
 launch, right-click the app → Open.
 
+## Releases and updates
+
+Installed apps check `latest.json` on the newest published GitHub release once a day at startup, and
+on request from Settings → Data → About → "check for updates". A newer version opens a prompt with its
+version and release notes; nothing is downloaded until the user picks "install and restart". Queued
+downloads and translations continue after the restart. Updates are signed with the updater key; the
+public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`), and the app rejects files
+not signed with the matching private key.
+
+To release a version:
+
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`
+   (`npm install` and `cargo check` refresh the lock files), commit, and push.
+2. Tag it with the release notes as the tag message. The notes are what the update prompt shows:
+
+   ```bash
+   git tag -a v0.2.0 -m "מה חדש בגרסה הזו"
+   ```
+
+   ```bash
+   git push origin v0.2.0
+   ```
+
+3. The Release workflow (`.github/workflows/release.yml`) fails fast if the tag and the version
+   differ, then builds the Windows installer and the macOS app and `.dmg`, signs the updater bundles, and
+   attaches everything plus `latest.json` to a **draft** release (about 20 minutes).
+4. Try the installer from the draft, then publish it. Apps see the update only once it is published.
+   Editing the release text on GitHub does not change the notes in `latest.json`.
+
+The workflow needs two repository secrets (Settings → Secrets and variables → Actions):
+`TAURI_SIGNING_PRIVATE_KEY` (the contents of the private key file) and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep the key file and its password backed up outside the repo:
+without them, installed copies can no longer be updated and need a manual reinstall. Local
+`npm run app:build` builds do not create updater files and need no key.
+
 ## AI engine setup (once)
 
 Either in the app (**Translation settings → AI engine → Install**, then **Download missing models**), or:
@@ -195,6 +230,9 @@ logs/             app.log, worker.log (no API keys)
 (minus images and secrets) to JSON.
 
 ## Tests
+
+GitHub Actions (`.github/workflows/ci.yml`) runs these three suites and the TypeScript check on Windows and macOS (Apple Silicon)
+for every pull request and every push to `main`.
 
 ```bash
 cd src-tauri && cargo test

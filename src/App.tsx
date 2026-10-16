@@ -5,6 +5,8 @@ import { BookMarked, Download, Home, ListChecks, Search, Settings as Cog } from 
 import { toast, useApp, useEvent } from "./lib/store";
 import { api } from "./lib/api";
 import { Toasts } from "./components/ui";
+import { UpdatePrompt } from "./components/UpdatePrompt";
+import { checkOnStartup } from "./lib/updates";
 import HomePage from "./pages/Home";
 import LibraryPage from "./pages/Library";
 import MangaPage from "./pages/Manga";
@@ -166,6 +168,8 @@ export default function App() {
   useEffect(() => {
     loadSettings().catch((e) => setError(String(e?.message ?? e)));
     invoke<string | null>("dev_start_route").then((r) => { if (r) devStart(r); }).catch(() => {});
+    // `npm run app:dev` builds are not installed, so there is nothing to update
+    if (!import.meta.env.DEV) checkOnStartup();
   }, [loadSettings]);
   if (error) {
     return (
@@ -179,6 +183,7 @@ export default function App() {
   return (
     <HashRouter>
       <Layout />
+      <UpdatePrompt />
       <Toasts />
     </HashRouter>
   );

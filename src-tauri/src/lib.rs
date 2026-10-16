@@ -84,6 +84,9 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // in-app updates: the UI asks before downloading, installing and restarting
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("mangaimg", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let path = percent_encoding::percent_decode_str(request.uri().path()).decode_utf8_lossy().into_owned();

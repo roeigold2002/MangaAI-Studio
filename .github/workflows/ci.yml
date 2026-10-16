@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (MSVC)
+            os: windows-latest
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: worker/uv.lock
+
+      - name: Frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      # Pillow loads FriBiDi at run time to shape Hebrew (see scripts/build-fribidi.ps1).
+      - name: FriBiDi cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: src-tauri/windows/native
+          key: fribidi-${{ hashFiles('scripts/build-fribidi.ps1') }}
+      - name: Build FriBiDi (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-fribidi.ps1 -IfMissing
+      - name: Install FriBiDi (macOS)
+        if: runner.os == 'macOS'
+        run: brew install fribidi
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Worker tests
+        working-directory: worker
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: /opt/homebrew/lib
+        run: |
+          uv sync --managed-python --frozen
+          uv run --frozen pytest -q

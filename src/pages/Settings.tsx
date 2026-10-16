@@ -4,7 +4,9 @@ import TranslationSettingsPage from "./TranslationSettings";
 import { SourcesAdvanced } from "../components/SourcesAdvanced";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { api } from "../lib/api";
+import { getVersion } from "@tauri-apps/api/app";
+import { api, errMessage } from "../lib/api";
+import { checkForUpdate } from "../lib/updates";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
 import { bytes } from "../lib/util";
 import { Field } from "../components/ui";
@@ -35,6 +37,20 @@ function GeneralAndData({ tab }: { tab: string }) {
   const dirty = JSON.stringify(s) !== JSON.stringify(settings);
   const paths = useLoad(() => api.appPaths(), []);
   const cache = useLoad(() => api.cacheSize(), []);
+  const version = useLoad(() => getVersion(), []);
+  const [checking, setChecking] = useState(false);
+
+  async function checkUpdates() {
+    setChecking(true);
+    try {
+      // a newer version opens the update prompt
+      if (!(await checkForUpdate())) toast("זו הגרסה העדכנית ביותר", "ok");
+    } catch (e) {
+      toast(`בדיקת העדכונים נכשלה: ${errMessage(e)}`, "bad");
+    } finally {
+      setChecking(false);
+    }
+  }
 
   async function save() {
     try {
@@ -152,8 +168,12 @@ function GeneralAndData({ tab }: { tab: string }) {
       <div className="panel">
         <div className="panel-head"><h2>אודות</h2></div>
         <p className="small muted">
-          MangaAI Studio 0.1.0. בלי חשבון, בלי טלמטריה ובלי שרת ציבורי. רשימת רכיבי הקוד הפתוח והרישיונות שלהם נמצאת בקובץ THIRDPARTYNOTICES.md.
+          MangaAI Studio {version.data ?? ""}. בלי חשבון, בלי טלמטריה ובלי שרת ציבורי. רשימת רכיבי הקוד הפתוח והרישיונות שלהם נמצאת בקובץ THIRDPARTYNOTICES.md.
         </p>
+        <div className="spread" style={{ marginTop: 10 }}>
+          <span className="small muted">עדכונים נבדקים פעם ביום מול דף הגרסאות ב-GitHub, ומותקנים רק באישורך.</span>
+          <button className="btn sm" disabled={checking} onClick={checkUpdates}>{checking ? "בודק…" : "בדיקת עדכונים"}</button>
+        </div>
       </div>
       </>
       )}
