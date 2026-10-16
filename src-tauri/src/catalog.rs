@@ -70,6 +70,30 @@ pub async fn add_default_stores(s: &Suwayomi) -> AppResult<Vec<ExtensionStore>> 
     Ok(added)
 }
 
+/// Install the listed extensions (package names) that the stores offer and that are not
+/// installed yet. Returns the installed ones; one that fails is logged and skipped.
+pub async fn install_default_extensions(s: &Suwayomi, pkgs: &[String]) -> AppResult<Vec<Extension>> {
+    if pkgs.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut known = list_extensions(s).await?;
+    if pkgs.iter().any(|p| !known.iter().any(|e| &e.pkg_name == p)) {
+        known = refresh_extensions(s).await?; // a store was just added
+    }
+    let mut installed = vec![];
+    for pkg in pkgs {
+        match known.iter().find(|e| &e.pkg_name == pkg) {
+            Some(e) if e.is_installed => {}
+            Some(_) => match change_extension(s, pkg, "install").await {
+                Ok(e) => installed.push(e),
+                Err(e) => tracing::warn!("default extension {pkg} not installed: {}", e.message),
+            },
+            None => tracing::warn!("default extension {pkg} is not offered by any store"),
+        }
+    }
+    Ok(installed)
+}
+
 // ---------------------------------------------------------------- search
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -719,6 +743,33 @@ mod tests {
         let added = add_default_stores(&s).await.unwrap();
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].name, "Keiyoushi");
+    }
+
+    #[tokio::test]
+    async fn setup_installs_default_extensions_once() {
+        let ext = |pkg: &str, name: &str, installed: bool| json!(
+            {"pkgName": pkg, "name": name, "lang": "all", "versionName": "1", "isInstalled": installed, "hasUpdate": false, "isObsolete": false, "isNsfw": false});
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/graphql")).and(body_string_contains("\"p.dex\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"updateExtension": {"extension": ext("p.dex", "MangaDex", true)}}})))
+            .expect(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/api/graphql")).and(body_string_contains("\"p.fire\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"updateExtension": {"extension": ext("p.fire", "MangaFire", true)}}})))
+            .expect(0).mount(&server).await;
+        // "p.gone" is unknown, so the list is refreshed once from the stores
+        Mock::given(method("POST")).and(path("/api/graphql")).and(body_string_contains("fetchExtensions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"fetchExtensions": {"extensions": [
+                ext("p.dex", "MangaDex", false), ext("p.fire", "MangaFire", true)]}}})))
+            .expect(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/api/graphql")).and(body_string_contains("extensions {"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"extensions": {"nodes": [
+                ext("p.dex", "MangaDex", false), ext("p.fire", "MangaFire", true)]}}})))
+            .mount(&server).await;
+        let s = Suwayomi::new(&server.uri(), None).unwrap();
+        let want = vec!["p.dex".to_string(), "p.fire".to_string(), "p.gone".to_string()];
+        let done = install_default_extensions(&s, &want).await.unwrap();
+        assert_eq!(done.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["MangaDex"], "installed ones are skipped, unknown ones ignored");
+        assert!(install_default_extensions(&s, &[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]

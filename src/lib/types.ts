@@ -62,7 +62,7 @@ export interface Settings {
     stroke_px: number; inpaint: string };
   ocr: { detector_threshold: number; device: string };
   sources: { suwayomi_enabled: boolean; suwayomi_url: string; suwayomi_user: string; download_concurrency: number;
-    managed: boolean; managed_port: number; languages: string[] };
+    managed: boolean; managed_port: number; languages: string[]; default_extensions: string[] };
   cloud_notice_accepted: boolean;
   onboarding_done: boolean;
 }

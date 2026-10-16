@@ -143,8 +143,9 @@ function Stores({ onChanged }: { onChanged: () => void }) {
   async function addDefaults() {
     setBusy(true);
     try {
-      const added = await api.addDefaultStores();
-      toast(added.length ? `נוספו: ${added.map((s) => s.name).join(", ")}` : "החנויות כבר רשומות", "ok");
+      const r = await api.applySourceDefaults();
+      const added = [...r.stores_added, ...r.extensions_installed];
+      toast(added.length ? `נוספו: ${added.join(", ")}` : "כל ברירות המחדל כבר מותקנות", "ok");
       reload();
       onChanged();
     } catch (e) {
@@ -159,16 +160,16 @@ function Stores({ onChanged }: { onChanged: () => void }) {
       <div className="panel-head">
         <h2>חנויות תוספים</h2>
         <div className="row">
-          {data && !data.some((s) => s.index_url.toLowerCase().includes("keiyoushi/extensions")) && (
-            <button className="btn sm" disabled={busy} onClick={addDefaults}><Plus size={14} /> הוספת Keiyoushi</button>
-          )}
+          <button className="btn sm" disabled={busy} onClick={addDefaults} title="Keiyoushi + התוספים שמותקנים אוטומטית">
+            <Plus size={14} /> השלמת ברירות המחדל
+          </button>
           <button className="btn sm" onClick={() => setAdding(true)}><Plus size={14} /> הוספת חנות</button>
         </div>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         חנות תוספים היא קובץ אינדקס (JSON) שמפרסם גורם חיצוני, עם רשימת תוספי מקורות. Suwayomi מוריד ממנה רק את התוספים שתבחר להתקין.
         ברירת המחדל: החנות הרשמית של Suwayomi (רק תוסף לחיבור לשרת אחר) וחנות הקהילה Keiyoushi (אלפי תוספים, ביניהם אתרי הוצאות לאור יפניות).
-        התקנת תוסף תמיד דורשת בחירה שלך.
+        בהתקנה הראשונה מותקנים אוטומטית גם MangaDex ו-MangaFire (מקורות באנגלית כברירת מחדל); תוספים אחרים מותקנים רק בבחירתך.
       </p>
       {loading && <Spinner label="טוען…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}

@@ -328,7 +328,7 @@ macro_rules! app_handlers {
             commands::list_stores,
             commands::add_store,
             commands::validate_store_url,
-            commands::add_default_stores,
+            commands::apply_source_defaults,
             commands::remove_store,
             commands::list_extensions,
             commands::change_extension,

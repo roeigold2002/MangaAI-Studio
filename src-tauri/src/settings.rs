@@ -233,7 +233,14 @@ pub struct SourceSettings {
     /// Source languages to search, in order of preference (multi-language extensions
     /// such as MangaDex install one source per language).
     pub languages: Vec<String>,
+    /// Extensions (package names) the one-click setup installs from the default stores,
+    /// so a new install can search right away. Edit or empty the list to change it.
+    pub default_extensions: Vec<String>,
 }
+
+/// MangaDex and MangaFire from the Keiyoushi store (multi-language; `languages` picks
+/// which of their per-language sources are searched).
+pub const DEFAULT_EXTENSIONS: &[&str] = &["eu.kanade.tachiyomi.extension.all.mangadex", "eu.kanade.tachiyomi.extension.all.mangafire"];
 
 impl Default for SourceSettings {
     fn default() -> Self {
@@ -244,7 +251,8 @@ impl Default for SourceSettings {
             download_concurrency: 2,
             managed: false,
             managed_port: 4567,
-            languages: vec!["ja".into(), "en".into()],
+            languages: vec!["en".into()],
+            default_extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
         }
     }
 }

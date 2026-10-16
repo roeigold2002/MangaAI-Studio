@@ -152,9 +152,12 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
     1,425 extensions in October 2026, 139 of them Japanese, including publisher sites such as BookWalker and Comic Action.
     Its old `index.min.json` is now only an "Outdated App" stub; Suwayomi follows `repo.json` to the current `index.pb`.
 
-  Both are third-party indexes; the app installs **no extension** without an explicit click. A server set up
-  before Keiyoushi became a default gets a "הוספת Keiyoushi" button under
-  **Settings → מקורות ותוספים (מתקדם)**, where other stores can be added or removed too.
+  Setup then installs the **default extensions**, MangaDex and MangaFire from Keiyoushi, and searches their
+  **English** sources (`sources.languages` defaults to `["en"]`). A new install can search and download right
+  away with nothing to configure. Both lists are settings: `sources.default_extensions` (package names) and
+  `sources.languages`. No other extension is installed without a click. For a server set up earlier,
+  **Settings → מקורות ותוספים (מתקדם) → השלמת ברירות המחדל** adds whatever is missing. Stores can also be added
+  or removed there.
 - Suwayomi 2.x replaced the old `extensionRepos` setting with **Extension Stores**
   (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
   removed; Suwayomi has no "disable" operation.
@@ -245,7 +248,7 @@ cd src-tauri && cargo run --example suwayomi_managed
 - No manga website source ships with the app. Website extensions come from the Keiyoushi store (or another
   store the user adds) and are installed only on request. The live tests used the official store's "Suwayomi"
   extension, the server's Local source, and registration of both default stores
-  (`cargo run --example suwayomi_managed`).
+  (`cargo run --example suwayomi_managed`, which also installs the default extensions and lists the English sources).
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
   was not run there.
 - Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. The installer is not

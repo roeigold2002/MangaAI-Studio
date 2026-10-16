@@ -55,6 +55,22 @@ async fn main() -> anyhow::Result<()> {
     }
     anyhow::ensure!(catalog::missing_default_stores(&stores).is_empty(), "a default store is missing");
 
+    // default extensions, then the English sources a search would use
+    let defaults = mangaai_lib::settings::SourceSettings::default();
+    let t0 = Instant::now();
+    let installed = catalog::install_default_extensions(&sw, &defaults.default_extensions).await.map_err(e)?;
+    println!("default extensions installed in {:.0}s: {:?}", t0.elapsed().as_secs_f32(), installed.iter().map(|x| &x.name).collect::<Vec<_>>());
+    let searched: Vec<String> = sw
+        .sources()
+        .await
+        .map_err(e)?
+        .into_iter()
+        .filter(|s| defaults.languages.contains(&s.lang))
+        .map(|s| format!("{} [{}]", s.name, s.lang))
+        .collect();
+    println!("sources searched by default ({:?}): {searched:?}", defaults.languages);
+    anyhow::ensure!(searched.len() >= defaults.default_extensions.len(), "a default extension has no source in the default language");
+
     rt.stop().await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let down = sw.ping().await.is_err();

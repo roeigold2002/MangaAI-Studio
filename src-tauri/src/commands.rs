@@ -856,9 +856,7 @@ pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<
     settings::save(&st.db, &s)?;
     start_managed(&st).await?;
     let sw = suwayomi(&st)?;
-    if let Err(e) = crate::catalog::add_default_stores(&sw).await {
-        tracing::warn!("default stores not added: {}", e.message);
-    }
+    apply_source_defaults_to(&sw, &s).await;
     st.dl_notify.notify_one();
     source_overview(st).await
 }
@@ -920,10 +918,37 @@ pub async fn add_store(st: State<'_, AppState>, url: String) -> R<crate::catalog
     Ok(store)
 }
 
-/// Register the default stores that are missing (for servers set up before a default was added).
+#[derive(Serialize)]
+pub struct SourceDefaults {
+    pub stores_added: Vec<String>,
+    pub extensions_installed: Vec<String>,
+}
+
+/// Default stores, then the default extensions from settings. Failures are logged, not fatal:
+/// the server works without them and the user can add them later.
+async fn apply_source_defaults_to(sw: &Suwayomi, s: &settings::AppSettings) -> SourceDefaults {
+    let stores_added = match crate::catalog::add_default_stores(sw).await {
+        Ok(v) => v.into_iter().map(|x| x.name).collect(),
+        Err(e) => {
+            tracing::warn!("default stores not added: {}", e.message);
+            vec![]
+        }
+    };
+    let extensions_installed = match crate::catalog::install_default_extensions(sw, &s.sources.default_extensions).await {
+        Ok(v) => v.into_iter().map(|x| x.name).collect(),
+        Err(e) => {
+            tracing::warn!("default extensions not installed: {}", e.message);
+            vec![]
+        }
+    };
+    SourceDefaults { stores_added, extensions_installed }
+}
+
+/// Add whatever default stores and extensions are missing (for servers set up earlier).
 #[tauri::command]
-pub async fn add_default_stores(st: State<'_, AppState>) -> R<Vec<crate::catalog::ExtensionStore>> {
-    crate::catalog::add_default_stores(&suwayomi(&st)?).await
+pub async fn apply_source_defaults(st: State<'_, AppState>) -> R<SourceDefaults> {
+    let s = settings::load(&st.db)?;
+    Ok(apply_source_defaults_to(&suwayomi(&st)?, &s).await)
 }
 
 #[tauri::command]
