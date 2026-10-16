@@ -8,6 +8,7 @@ pub mod db;
 pub mod downloads;
 pub mod editor;
 pub mod error;
+pub mod follow;
 pub mod jobs;
 pub mod library;
 pub mod pipeline;
@@ -83,6 +84,7 @@ pub fn run() {
     }));
     builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // in-app updates: the UI asks before downloading, installing and restarting
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -225,6 +227,33 @@ pub fn run() {
                     handle.exit(0);
                 });
             }
+            // New chapters of online series: first look a few minutes after launch, then every N hours.
+            {
+                let (db, secrets, dl, handle) = (db.clone(), secrets.clone(), dl_notify.clone(), app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    loop {
+                        let Ok(s) = settings::load(&db) else { return };
+                        let hours = s.sources.check_new_chapters_hours;
+                        if hours > 0 && s.sources.suwayomi_enabled {
+                            match commands::make_adapter(&db, secrets.as_ref()) {
+                                Ok(adapter) => match follow::check(&db, adapter, s.sources.auto_download_new).await {
+                                    Ok(report) => {
+                                        tracing::info!(checked = report.checked, new = report.new.len(), "new chapter check");
+                                        commands::announce_new_chapters(&handle, &report);
+                                        if s.sources.auto_download_new && !report.new.is_empty() {
+                                            dl.notify_one();
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!("new chapter check failed: {}", e.message),
+                                },
+                                Err(e) => tracing::warn!("new chapter check skipped: {}", e.message),
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600 * hours.max(1) as u64)).await;
+                    }
+                });
+            }
             let search_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
             app.manage(AppState { runtime, search_gen, db, paths, engine, worker: vision, secrets, job_notify, dl_notify, resource_dir });
             Ok(())
@@ -336,6 +365,7 @@ macro_rules! app_handlers {
             commands::add_store,
             commands::validate_store_url,
             commands::apply_source_defaults,
+            commands::check_new_chapters,
             commands::remove_store,
             commands::list_extensions,
             commands::change_extension,

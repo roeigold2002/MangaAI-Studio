@@ -62,7 +62,8 @@ export interface Settings {
     stroke_px: number; inpaint: string };
   ocr: { detector_threshold: number; device: string };
   sources: { suwayomi_enabled: boolean; suwayomi_url: string; suwayomi_user: string; download_concurrency: number;
-    managed: boolean; managed_port: number; languages: string[]; default_extensions: string[] };
+    managed: boolean; managed_port: number; languages: string[]; default_extensions: string[];
+    check_new_chapters_hours: number; auto_download_new: boolean };
   cloud_notice_accepted: boolean;
   onboarding_done: boolean;
 }
@@ -140,6 +141,9 @@ export interface CleanupEntry {
 }
 export interface CleanupPlan { manga_id: number; remove: CleanupEntry[]; kept: number; preferred: string | null; bytes: number }
 export interface CleanupResult { chapters_removed: number; downloads_cancelled: number; bytes_freed: number }
+
+export interface NewChapters { manga_id: number; title: string; chapters: string[]; queued: boolean }
+export interface CheckReport { checked: number; failed: string[]; new: NewChapters[] }
 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;

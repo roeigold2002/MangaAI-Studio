@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CheckReport,
   Category, ChapterView, Download, EditorPage, EngineStatus, Estimate, GlossaryEntry, HistoryEntry, HomeData, ImportReport,
   Job, MangaDetail, MangaSummary, MemoryEntry, PageState, Region, RemoteChapter, RemoteDetail, RemoteManga, Settings, SourceInfo,
   SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus, InstalledSource, SourcePreference,
@@ -95,6 +96,7 @@ export const api = {
   remoteChapterCount: (mangaRef: string) => invoke<number>("remote_chapter_count", { mangaRef }),
   stores: () => invoke<ExtensionStore[]>("list_stores"),
   addStore: (url: string) => invoke<ExtensionStore>("add_store", { url }),
+  checkNewChapters: () => invoke<CheckReport>("check_new_chapters"),
   applySourceDefaults: () => invoke<{ stores_added: string[]; extensions_installed: string[] }>("apply_source_defaults"),
   validateStoreUrl: (url: string) => invoke<string>("validate_store_url", { url }),
   removeStore: (indexUrl: string) => invoke<void>("remove_store", { indexUrl }),

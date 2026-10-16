@@ -237,6 +237,10 @@ pub struct SourceSettings {
     /// Extensions (package names) the one-click setup installs from the default stores,
     /// so a new install can search right away. Edit or empty the list to change it.
     pub default_extensions: Vec<String>,
+    /// Look for new chapters of the library's online series every this many hours (0 = never).
+    pub check_new_chapters_hours: u32,
+    /// Queue new chapters for download when they are found (otherwise only notify).
+    pub auto_download_new: bool,
 }
 
 /// MangaDex and MangaFire from the Keiyoushi store (multi-language; `languages` picks
@@ -254,6 +258,8 @@ impl Default for SourceSettings {
             managed_port: 4567,
             languages: vec!["en".into()],
             default_extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
+            check_new_chapters_hours: 12,
+            auto_download_new: true,
         }
     }
 }

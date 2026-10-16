@@ -197,6 +197,12 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
   (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
   removed; Suwayomi has no "disable" operation.
 - Some sources need settings (server address, login…): Settings → מקורות ותוספים → מקורות מותקנים → הגדרות המקור.
+- **New chapters:** two minutes after launch and then every 12 hours (`sources.check_new_chapters_hours`, 0 = off), the
+  app asks each online series' source for chapters the library has never seen in any version. New chapters are queued
+  one version each, using the same rules as "download all" (`sources.auto_download_new`; off = notify only). A Windows
+  notification and an in-app message name them. Chapters that failed before are not retried behind your back.
+  **הספרייה שלי → בדיקת פרקים חדשים** checks right away. A live check against your own server, on a database copy:
+  `cargo run --example check_new -- <copy of library.db> http://127.0.0.1:4567`.
 - The managed server's **Local source** reads `…/suwayomi/data/local/<Title>/<Chapter>.cbz`. Files placed there
   show up in search too.
 

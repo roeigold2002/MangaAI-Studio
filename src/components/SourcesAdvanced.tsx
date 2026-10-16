@@ -83,6 +83,13 @@ function EngineAndConnection({ onChanged }: { onChanged: () => void }) {
         <Field label="כתובת השרת"><input className="input ltr" value={s.suwayomi_url} onChange={(e) => setS({ ...s, suwayomi_url: e.target.value })} /></Field>
         <Field label="שם משתמש (אם הוגדרה הזדהות)"><input className="input ltr" value={s.suwayomi_user} onChange={(e) => setS({ ...s, suwayomi_user: e.target.value })} /></Field>
         <Field label="סיסמה" hint={`נשמרת ב${credentialStoreName()}`}><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
+        <Field label="בדיקת פרקים חדשים" hint="כל כמה שעות לבדוק את הסדרות בספרייה (0 = לא לבדוק)">
+          <input className="input" type="number" min={0} max={168} value={s.check_new_chapters_hours} onChange={(e) => setS({ ...s, check_new_chapters_hours: Number(e.target.value) })} />
+        </Field>
+        <label className="check" style={{ alignSelf: "end" }}>
+          <input type="checkbox" checked={s.auto_download_new} onChange={(e) => setS({ ...s, auto_download_new: e.target.checked })} />
+          <span>להוריד פרקים חדשים אוטומטית (אחרת רק התראה)</span>
+        </label>
         <Field label="הורדות במקביל" hint="נכנס לתוקף אחרי הפעלה מחדש"><input className="input" type="number" min={1} max={6} value={s.download_concurrency} onChange={(e) => setS({ ...s, download_concurrency: Number(e.target.value) })} /></Field>
       </div>
       <Field label="שפות לחיפוש" hint="מקורות כמו MangaDex מותקנים כמקור נפרד לכל שפה. החיפוש רץ רק על השפות שנבחרו. זיהוי הטקסט לתרגום תומך כרגע ביפנית.">

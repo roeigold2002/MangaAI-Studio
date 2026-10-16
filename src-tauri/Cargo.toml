@@ -47,6 +47,7 @@ tempfile = "3"
 futures-util = "0.3"
 which = "7"
 fs4 = "1"
+tauri-plugin-notification = "2"
 
 [features]
 # Debug aid: lets the frontend save PNG snapshots of the webview (visual QA without screen-recording rights).

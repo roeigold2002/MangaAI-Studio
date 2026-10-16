@@ -1012,6 +1012,39 @@ async fn apply_source_defaults_to(sw: &Suwayomi, s: &settings::AppSettings) -> S
     SourceDefaults { stores_added, extensions_installed }
 }
 
+/// Look for new chapters of the library's online series now (the background check runs the same).
+#[tauri::command]
+pub async fn check_new_chapters(app: tauri::AppHandle, st: State<'_, AppState>) -> R<crate::follow::CheckReport> {
+    let s = settings::load(&st.db)?;
+    let report = crate::follow::check(&st.db, make_adapter(&st.db, st.secrets.as_ref())?, s.sources.auto_download_new).await?;
+    announce_new_chapters(&app, &report);
+    if s.sources.auto_download_new && !report.new.is_empty() {
+        st.dl_notify.notify_one();
+    }
+    Ok(report)
+}
+
+/// Tell the user about new chapters: an event for the open window and a system notification.
+pub fn announce_new_chapters(app: &tauri::AppHandle, report: &crate::follow::CheckReport) {
+    use tauri::Emitter;
+    use tauri_plugin_notification::NotificationExt;
+    if report.new.is_empty() {
+        return;
+    }
+    let _ = app.emit("new-chapters", report);
+    let body = report
+        .new
+        .iter()
+        .map(|n| match n.chapters.as_slice() {
+            [one] => format!("{}: {one}", n.title),
+            many => format!("{}: {} פרקים חדשים", n.title, many.len()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let title = if report.new.iter().all(|n| n.queued) { "פרקים חדשים בהורדה" } else { "יצאו פרקים חדשים" };
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
 /// Add whatever default stores and extensions are missing (for servers set up earlier).
 #[tauri::command]
 pub async fn apply_source_defaults(st: State<'_, AppState>) -> R<SourceDefaults> {

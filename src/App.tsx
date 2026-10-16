@@ -6,6 +6,7 @@ import { toast, useApp, useEvent } from "./lib/store";
 import { api } from "./lib/api";
 import { Toasts } from "./components/ui";
 import { UpdatePrompt } from "./components/UpdatePrompt";
+import type { CheckReport } from "./lib/types";
 import { checkOnStartup } from "./lib/updates";
 import HomePage from "./pages/Home";
 import LibraryPage from "./pages/Library";
@@ -40,6 +41,12 @@ function Sidebar() {
     // completion indicator wherever the user is
     if (d.status === "done") toast(`הורד: ${d.manga_title} · ${d.chapter_title}. נמצא ב"הספרייה שלי".`, "ok");
     if (d.status === "failed") toast(`ההורדה נכשלה: ${d.chapter_title} (${d.error ?? ""})`, "bad");
+  });
+  useEvent<CheckReport>("new-chapters", (r) => {
+    for (const n of r.new) {
+      const what = n.chapters.length === 1 ? n.chapters[0] : `${n.chapters.length} פרקים חדשים`;
+      toast(`${n.title}: ${what}${n.queued ? " (בהורדה)" : ""}`, "ok");
+    }
   });
   useEvent<{ status: string; manga_title: string; chapter_title: string; failed: number }>("job-updated", (j) => {
     if (j.status === "done") toast(`התרגום הסתיים: ${j.manga_title} · ${j.chapter_title}`, "ok");
