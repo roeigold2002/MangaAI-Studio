@@ -299,17 +299,41 @@ impl DownloadRunner {
             let _ = self.set(id, "running", None);
             let me = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = me.run_one(id).await {
-                    tracing::warn!(download = id, "download failed: {}", e.message);
-                    // the partial folder is kept so a retry resumes where it stopped
-                    let _ = me.set(id, "failed", Some(&e.message));
-                }
+                me.run_waiting_for_source(id, OFFLINE_RETRY, OFFLINE_PATIENCE).await;
                 drop(permit);
                 me.notify.notify_one();
             });
         }
     }
+
+    /// Run one download. While the source server is unreachable (typically the managed
+    /// Suwayomi still booting after an app restart, when interrupted downloads resume),
+    /// the download waits and retries instead of failing; after `patience` it fails.
+    pub async fn run_waiting_for_source(&self, id: i64, retry: std::time::Duration, patience: std::time::Duration) {
+        let started = std::time::Instant::now();
+        loop {
+            match self.run_one(id).await {
+                Ok(()) => return,
+                Err(e) if e.code == "source_offline" && started.elapsed() < patience => {
+                    let _ = self.set(id, "running", Some("waiting for the sources engine to start…"));
+                    tokio::time::sleep(retry).await;
+                    if self.status(id).ok().as_deref() != Some("running") {
+                        return; // cancelled or paused while waiting
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(download = id, "download failed: {}", e.message);
+                    // the partial folder is kept so a retry resumes where it stopped
+                    let _ = self.set(id, "failed", Some(&e.message));
+                    return;
+                }
+            }
+        }
+    }
 }
+
+const OFFLINE_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
+const OFFLINE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
 
 #[cfg(test)]
 mod tests {
@@ -425,6 +449,70 @@ mod tests {
             self.fetched.lock().push(i);
             Ok((png(), Some("image/png".into())))
         }
+    }
+
+    /// Unreachable for the first `down` calls, like a server that is still starting.
+    struct BootingSource {
+        down: parking_lot::Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl SourceAdapter for BootingSource {
+        async fn ping(&self) -> AppResult<String> { Ok("b".into()) }
+        async fn sources(&self) -> AppResult<Vec<SourceInfo>> { Ok(vec![]) }
+        async fn browse(&self, _: &str, _: &str, _: Option<&str>, _: u32) -> AppResult<MangaPage> { Ok(MangaPage { mangas: vec![], has_next_page: false }) }
+        async fn manga(&self, _: &str) -> AppResult<RemoteManga> { unimplemented!() }
+        async fn chapters(&self, _: &str) -> AppResult<Vec<RemoteChapter>> { Ok(vec![]) }
+        async fn page_urls(&self, _: &str) -> AppResult<Vec<String>> {
+            let mut d = self.down.lock();
+            if *d > 0 {
+                *d -= 1;
+                return Err(AppError::new("source_offline", "Suwayomi is not reachable"));
+            }
+            Ok((0..3).map(|i| format!("b://{i}")).collect())
+        }
+        async fn fetch(&self, _: &str) -> AppResult<(Vec<u8>, Option<String>)> { Ok((png(), Some("image/png".into()))) }
+    }
+
+    fn booting_runner(dir: &std::path::Path, down: usize) -> DownloadRunner {
+        let src = Arc::new(BootingSource { down: parking_lot::Mutex::new(down) });
+        DownloadRunner {
+            db: Db::open_in_memory().unwrap(),
+            paths: Paths::new(dir.to_path_buf()).unwrap(),
+            events: Arc::new(NoEvents),
+            notify: Arc::new(Notify::new()),
+            adapter: Arc::new(move || Ok(src.clone() as Arc<dyn SourceAdapter>)),
+        }
+    }
+
+    #[tokio::test]
+    async fn resumed_download_waits_for_the_source_server_to_start() {
+        // Regression: after a restart the queue resumed before the managed server answered,
+        // and interrupted downloads were marked failed.
+        let d = tempfile::tempdir().unwrap();
+        let r = booting_runner(d.path(), 3);
+        let (m, chs) = remote();
+        enqueue(&r.db, &m, &chs).unwrap();
+        let id = list(&r.db).unwrap()[0].id;
+        let ms = std::time::Duration::from_millis;
+        r.run_waiting_for_source(id, ms(5), ms(5_000)).await;
+        let dl = get(&r.db, id).unwrap();
+        assert_eq!((dl.status.as_str(), dl.progress), ("done", 3));
+        assert_eq!(dl.error, None);
+    }
+
+    #[tokio::test]
+    async fn download_fails_when_the_source_server_never_starts() {
+        let d = tempfile::tempdir().unwrap();
+        let r = booting_runner(d.path(), usize::MAX);
+        let (m, chs) = remote();
+        enqueue(&r.db, &m, &chs).unwrap();
+        let id = list(&r.db).unwrap()[0].id;
+        let ms = std::time::Duration::from_millis;
+        r.run_waiting_for_source(id, ms(5), ms(40)).await;
+        let dl = get(&r.db, id).unwrap();
+        assert_eq!(dl.status, "failed");
+        assert!(dl.error.unwrap().contains("not reachable"));
     }
 
     #[tokio::test]

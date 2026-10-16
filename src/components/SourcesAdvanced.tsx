@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Compass, Download, FolderOpen, Plus, Power, RefreshCw, Search, Trash2 } from "lucide-react";
 import { api, errMessage } from "../lib/api";
-import { toast, toastError, useApp, useLoad } from "../lib/store";
+import { toast, toastError, useApp, useEvent, useLoad } from "../lib/store";
 import { credentialStoreName, langName, remoteUrl } from "../lib/util";
 import { Empty, ErrorBox, Field, Modal, Spinner } from "./ui";
 import { SourceGate, sourceState } from "./SourceGate";
@@ -12,6 +12,7 @@ import type { Extension, InstalledSource, SourcePreference } from "../lib/types"
 /** Advanced: server connection, managed engine, extension stores and extensions. */
 export function SourcesAdvanced() {
   const overview = useLoad(() => api.sourceOverview(), []);
+  useEvent("sources-changed", overview.reload);
   const o = overview.data;
   const state = sourceState(o);
   const serverUp = o?.health?.server === "ok";

@@ -170,16 +170,29 @@ pub fn run() {
             if let Ok(s) = settings::load(&db) {
                 if s.sources.managed && s.sources.suwayomi_enabled && runtime.is_installed() {
                     let (r, url, port) = (runtime.clone(), s.sources.suwayomi_url.clone(), s.sources.managed_port);
+                    let (handle, dl) = (app.handle().clone(), dl_notify.clone());
                     tauri::async_runtime::spawn(async move {
-                        let reachable = match sources::Suwayomi::new(&url, None) {
-                            Ok(sw) => sources::SourceAdapter::ping(&sw).await.is_ok(),
-                            Err(_) => false,
-                        };
-                        if !reachable {
-                            if let Err(e) = r.start(port).await {
-                                tracing::warn!("managed Suwayomi not started: {}", e.message);
-                            }
+                        let Ok(sw) = sources::Suwayomi::new(&url, None) else { return };
+                        if sources::SourceAdapter::ping(&sw).await.is_ok() {
+                            return;
                         }
+                        if let Err(e) = r.start(port).await {
+                            tracing::warn!("managed Suwayomi not started: {}", e.message);
+                            return;
+                        }
+                        // Pages that asked while the server was booting showed it as off.
+                        for _ in 0..90 {
+                            if sources::SourceAdapter::ping(&sw).await.is_ok() {
+                                let _ = handle.emit("sources-changed", serde_json::json!({}));
+                                dl.notify_one();
+                                return;
+                            }
+                            if r.exited().await.is_some() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                        let _ = handle.emit("sources-changed", serde_json::json!({}));
                     });
                 }
             }

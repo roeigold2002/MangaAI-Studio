@@ -20,6 +20,7 @@ export default function HomePage() {
   const refresh = useThrottled(reload, 800);
   useEvent("job-updated", refresh);
   useEvent("download-updated", refresh);
+  useEvent("sources-changed", overview.reload);
 
   if (error) return <div className="page"><ErrorBox error={error} onRetry={reload} /></div>;
   if (!data || !settings) return null;
