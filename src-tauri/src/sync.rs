@@ -302,17 +302,57 @@ pub fn sync_folder(db: &Db, folder: &Path) -> AppResult<MergeReport> {
         return Err(AppError::new("sync_folder", format!("the sync folder is not reachable: {}", folder.display())));
     }
     let file = folder.join(STATE_FILE);
-    let rep = match std::fs::read(&file) {
-        Ok(bytes) => {
-            let remote: SyncState = serde_json::from_slice(&bytes).map_err(|e| AppError::new("sync_file", format!("{}: {e}", file.display())))?;
-            merge_state(db, &remote)?
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => MergeReport::default(),
+    let remote: Option<SyncState> = match std::fs::read(&file) {
+        Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| AppError::new("sync_file", format!("{}: {e}", file.display())))?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
-    let state = export_state(db)?;
+    let rep = match &remote {
+        Some(r) => merge_state(db, r)?,
+        None => MergeReport::default(),
+    };
+    let mut state = export_state(db)?;
+    if let Some(r) = &remote {
+        carry_over(&mut state, r);
+    }
     crate::assets::atomic_write(&file, serde_json::to_string_pretty(&state)?.as_bytes())?;
     Ok(rep)
+}
+
+fn same_series(a: &MangaState, b: &MangaState) -> bool {
+    match (&a.source_id, &a.source_ref, &b.source_id, &b.source_ref) {
+        (Some(s1), Some(r1), Some(s2), Some(r2)) => s1 == s2 && r1 == r2,
+        (None, _, None, _) => a.title.to_lowercase() == b.title.to_lowercase(),
+        _ => false,
+    }
+}
+
+/// Keep what this computer cannot hold yet (series that are only elsewhere, progress of chapters
+/// not downloaded here, glossary and memory entries) so writing the folder never loses another
+/// computer's data. Items this computer has were merged already and its version is current.
+fn carry_over(local: &mut SyncState, remote: &SyncState) {
+    for rm in &remote.manga {
+        match local.manga.iter_mut().find(|lm| same_series(lm, rm)) {
+            None => local.manga.push(rm.clone()),
+            Some(lm) => {
+                for rc in &rm.chapters {
+                    if !lm.chapters.iter().any(|c| c.key == rc.key) {
+                        lm.chapters.push(rc.clone());
+                    }
+                }
+                for g in &rm.glossary {
+                    if !lm.glossary.iter().any(|x| x.source == g.source) {
+                        lm.glossary.push(g.clone());
+                    }
+                }
+                for mm in &rm.memory {
+                    if !lm.memory.iter().any(|x| x.source_text == mm.source_text) {
+                        lm.memory.push(mm.clone());
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- backup
@@ -520,6 +560,34 @@ mod tests {
         assert_eq!(rep.chapters_updated, 0, "A already had the newest progress");
         let again = sync_folder(&a, folder.path()).unwrap();
         assert!(again.series_added.is_empty() && again.chapters_updated == 0 && again.glossary_updated == 0 && again.memory_added == 0);
+    }
+
+    #[test]
+    fn progress_for_chapters_not_downloaded_yet_survives_the_other_computer() {
+        // Regression: computer B had the series but not chapter 2 yet; its sync wrote the folder
+        // back without chapter 2, so A's progress was gone by the time B downloaded it.
+        let folder = tempfile::tempdir().unwrap();
+        let (a, b) = (Db::open_in_memory().unwrap(), Db::open_in_memory().unwrap());
+        let ma = online(&a, "7", "Lemon");
+        let a2 = chapter(&a, ma, 2.0);
+        a.with(|c| { c.execute("UPDATE chapter SET read = 1, last_page = 9, last_read_at = '2026-10-16T10:00:00Z' WHERE id = ?1", [a2])?; Ok(()) }).unwrap();
+        a.with(|c| {
+            c.execute("INSERT INTO manga (title, source_kind, import_root, created_at, updated_at) VALUES ('My Scans', 'local', 'C:/scans', 'x', 'x')", [])?;
+            Ok(())
+        })
+        .unwrap();
+        sync_folder(&a, folder.path()).unwrap(); // A closes
+
+        let mb = online(&b, "7", "Lemon");
+        chapter(&b, mb, 1.0);
+        sync_folder(&b, folder.path()).unwrap(); // B has no chapter 2 yet and writes the folder back
+        sync_folder(&b, folder.path()).unwrap(); // and again, 15 minutes later
+        let b2 = chapter(&b, mb, 2.0); // B downloads chapter 2
+        sync_folder(&b, folder.path()).unwrap();
+        assert_eq!(progress(&b, b2), (true, 9), "A's progress reached B's chapter once it existed");
+
+        let state: SyncState = serde_json::from_slice(&std::fs::read(folder.path().join(STATE_FILE)).unwrap()).unwrap();
+        assert!(state.manga.iter().any(|m| m.title == "My Scans"), "the other computer's local series stay in the folder");
     }
 
     #[test]
