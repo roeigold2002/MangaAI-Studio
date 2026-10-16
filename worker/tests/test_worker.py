@@ -269,3 +269,23 @@ def test_english_ocr_reads_a_lettered_bubble():
     text, conf = en_ocr_box(im, [60, 25, 360, 170], "cpu")
     assert text.replace(" ", "") == "I'MGONNABEWALKINGTOWARDTHESTATION...", text
     assert conf is not None and conf > 0.5
+
+
+def test_two_text_blocks_in_one_balloon_get_separate_areas():
+    """Regression (real English page): one cloud balloon was detected as two overlapping bubbles,
+    each text block got the whole area, and the two Hebrew texts were drawn over each other."""
+    hey = {"bbox": [213, 672, 367, 743], "bubble": [192, 586, 404, 838]}
+    out = {"bbox": [113, 760, 266, 889], "bubble": [71, 642, 318, 977]}
+    boxes = [render.render_box(r, 1400, 2045, 0.10) for r in (hey, out)]
+    sep = render.separate_boxes(boxes, [hey["bbox"], out["bbox"]], [False, False])
+    a, b = sep
+    assert min(a[2], b[2]) <= max(a[0], b[0]) or min(a[3], b[3]) <= max(a[1], b[1]), f"still overlapping: {sep}"
+    for box, r in zip(sep, (hey, out)):  # each area still covers most of its own text
+        t = r["bbox"]
+        assert box[0] <= t[0] + 2 and box[2] >= t[2] - 2
+    # a box the user placed by hand is never moved
+    fixed = render.separate_boxes(boxes, [hey["bbox"], out["bbox"]], [True, False])
+    assert fixed[0] == list(boxes[0])
+    # boxes that do not touch are left alone
+    far = render.separate_boxes([[0, 0, 10, 10], [20, 20, 30, 30]], [[0, 0, 10, 10], [20, 20, 30, 30]], [False, False])
+    assert far == [[0, 0, 10, 10], [20, 20, 30, 30]]

@@ -156,6 +156,39 @@ def render_box(region: dict, w: int, h: int, padding: float) -> list[int]:
     return clamp(tb, w, h)
 
 
+def separate_boxes(boxes: list[list[int]], texts: list[list[int]], fixed: list[bool]) -> list[list[int]]:
+    """Render areas must not overlap. The detector sometimes sees one balloon with two text blocks
+    as two overlapping bubbles; each block then got the whole area and the texts were drawn on top
+    of each other. Overlapping areas are cut between their original text boxes, along the axis on
+    which those are farther apart. Areas the user placed by hand (`fixed`) are left alone."""
+    out = [list(b) for b in boxes]
+    for i in range(len(out)):
+        for j in range(i + 1, len(out)):
+            a, b = out[i], out[j]
+            if min(a[2], b[2]) <= max(a[0], b[0]) or min(a[3], b[3]) <= max(a[1], b[1]):
+                continue  # no overlap
+            ta, tb = texts[i], texts[j]
+            gap_y = max(tb[1] - ta[3], ta[1] - tb[3])
+            gap_x = max(tb[0] - ta[2], ta[0] - tb[2])
+            if max(gap_x, gap_y) < 0:
+                continue  # the texts themselves overlap: nothing sensible to cut
+            if gap_y >= gap_x:
+                upper, lower = (i, j) if ta[1] <= tb[1] else (j, i)
+                cut = int(round((texts[upper][3] + texts[lower][1]) / 2))
+                if not fixed[upper]:
+                    out[upper][3] = min(out[upper][3], cut)
+                if not fixed[lower]:
+                    out[lower][1] = max(out[lower][1], cut)
+            else:
+                left, right = (i, j) if ta[0] <= tb[0] else (j, i)
+                cut = int(round((texts[left][2] + texts[right][0]) / 2))
+                if not fixed[left]:
+                    out[left][2] = min(out[left][2], cut)
+                if not fixed[right]:
+                    out[right][0] = max(out[right][0], cut)
+    return out
+
+
 def _luminance(img: np.ndarray, box: list[int]) -> float:
     x1, y1, x2, y2 = box
     crop = img[y1:y2, x1:x2]
@@ -190,13 +223,19 @@ def render(clean_path: str, out_path: str, regions: list[dict], fonts_dir: str, 
         if not os.path.exists(fpath):
             raise RenderError(f"font not found: {fname}")
         box = render_box(r, w, h, padding)
+        jobs.append([r, text, fpath, box, None, loud])
+    # two text blocks in one balloon: keep their areas apart
+    boxes = separate_boxes([j[3] for j in jobs], [clamp(j[0]["bbox"], w, h) for j in jobs], [bool(j[0].get("box")) for j in jobs])
+    ready = []
+    for (r, text, fpath, _old, _lay, loud), box in zip(jobs, boxes):
         bw, bh = box[2] - box[0], box[3] - box[1]
         if bw < 8 or bh < 8:
             notes.append({"rid": r.get("rid"), "kind": "box_too_small"})
             continue
         lay = fit(text, fpath, bw, bh, max(6, int(min_size * scale)), max(8, int(max_size * scale)), spacing,
                   r.get("font_size"))
-        jobs.append([r, text, fpath, box, lay, loud])
+        ready.append([r, text, fpath, box, lay, loud])
+    jobs = ready
 
     # Keep sizes consistent on a page: big bubbles with short lines shouldn't
     # get huge text. Cap at 1.25x the median size (manual sizes and loud text exempt).

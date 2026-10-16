@@ -60,7 +60,7 @@ pub trait Vision: Send + Sync {
     async fn prepare_models(&self) -> AppResult<Value>;
     /// Version strings that are part of cache keys.
     fn versions(&self) -> (String, String, String) {
-        ("a2".into(), "i3".into(), "r1".into())
+        ("a2".into(), "i3".into(), "r2".into())
     }
 }
 
