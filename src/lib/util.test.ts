@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: () => "mangaimg://localhost/" }));
 
-import { arrowStep, chapterTranslationBadge, credentialStoreName, detectPlatform, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
+import { arrowStep, chapterKey, chaptersInRange, chapterStats, chapterTranslationBadge, credentialStoreName, detectPlatform, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
 
 const p = (w = 100, h = 140) => ({ width: w, height: h });
 
@@ -70,5 +70,28 @@ describe("platform", () => {
   it("names the credential store of each OS", () => {
     expect(credentialStoreName("windows")).toContain("Windows");
     expect(credentialStoreName("mac")).toContain("Keychain");
+  });
+});
+
+describe("chapter versions", () => {
+  const ch = (chapter_ref: string, number: number | null, scanlator: string | null, title = `Ch. ${number}`) => ({ chapter_ref, number, scanlator, title });
+  const list = [ch("a", 1, "official"), ch("b", 1, "fans"), ch("c", 2, "official"), ch("d", 2.5, "fans"), ch("e", 3, null), ch("f", 10, "fans")];
+
+  it("groups versions by chapter number, keeping decimals apart", () => {
+    expect(chapterKey(ch("x", 104, null))).toBe(chapterKey(ch("y", 104.0, "g", "Ch. 104 (fan tl)")));
+    expect(chapterKey(ch("x", 104, null))).not.toBe(chapterKey(ch("y", 104.5, null)));
+    expect(chapterKey(ch("x", null, null, " Oneshot "))).toBe(chapterKey(ch("y", null, null, "oneshot")));
+  });
+
+  it("counts chapters, versions and what is still missing", () => {
+    const s = chapterStats(list, { a: "done", d: "queued", e: "failed" });
+    expect(s).toEqual({ distinct: 5, versions: 6, missing: 3, groups: [["fans", 3], ["official", 2]] });
+  });
+
+  it("selects ranges by chapter number", () => {
+    expect(chaptersInRange(list, 2, 3).map((c) => c.chapter_ref)).toEqual(["c", "d", "e"]);
+    expect(chaptersInRange(list, 1, 1).map((c) => c.chapter_ref)).toEqual(["a", "b"]);
+    const unnumbered = [ch("p", null, null, "A"), ch("q", null, null, "B"), ch("r", null, null, "C")];
+    expect(chaptersInRange(unnumbered, 2, 3).map((c) => c.chapter_ref)).toEqual(["q", "r"]);
   });
 });

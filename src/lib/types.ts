@@ -81,7 +81,7 @@ export interface Estimate {
 export interface Download {
   id: number; source_id: string; manga_ref: string; manga_title: string; chapter_ref: string; chapter_title: string;
   chapter_number: number | null; manga_id: number | null; chapter_id: number | null; status: string; progress: number;
-  total: number; error: string | null; updated_at: string;
+  total: number; error: string | null; updated_at: string; scanlator: string | null; auto: boolean;
 }
 
 export interface RecentTranslated {
@@ -130,7 +130,16 @@ export interface RemoteChapter {
 }
 export interface RemoteDetail {
   manga: RemoteManga; chapters: RemoteChapter[]; downloads: Record<string, string>; local_chapters: Record<string, number>; local_manga_id: number | null;
+  preferred_scanlator: string | null;
 }
+/** What a bulk download would queue: one version per chapter. */
+export interface DownloadPlan { chapters: number; duplicates: number; placeholders: number; already: number; preferred: string | null }
+export interface CleanupEntry {
+  chapter_id: number | null; download_id: number | null; title: string; number: number | null; scanlator: string | null;
+  pages: number | null; status: string; reason: "duplicate" | "placeholder"; bytes: number;
+}
+export interface CleanupPlan { manga_id: number; remove: CleanupEntry[]; kept: number; preferred: string | null; bytes: number }
+export interface CleanupResult { chapters_removed: number; downloads_cancelled: number; bytes_freed: number }
 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;

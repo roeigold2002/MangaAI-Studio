@@ -578,6 +578,8 @@ pub struct RemoteDetail {
     /// chapter_ref -> chapter id in the local library (downloaded chapters)
     pub local_chapters: std::collections::HashMap<String, i64>,
     pub local_manga_id: Option<i64>,
+    /// The scanlation group the user prefers for this manga (bulk downloads).
+    pub preferred_scanlator: Option<String>,
 }
 
 #[tauri::command]
@@ -585,6 +587,8 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
     let a = make_adapter(&st.db, st.secrets.as_ref())?;
     let manga = a.manga(&manga_ref).await?;
     let chapters = a.chapters(&manga_ref).await?;
+    downloads::backfill_scanlators(&st.db, &manga.source_id, &chapters)?;
+    let preferred_scanlator = downloads::stored_preference(&st.db, &manga)?;
     let (downloads, local_chapters, local) = st.db.with(|c| {
         let mut s = c.prepare("SELECT chapter_ref, status FROM download WHERE source_id = ?1 AND manga_ref = ?2")?;
         let map = s
@@ -603,7 +607,19 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
             .optional()?;
         Ok((map, chapters, local))
     })?;
-    Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local })
+    Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local, preferred_scanlator })
+}
+
+/// What a bulk download of `chapters` would queue: one version per chapter number,
+/// without one-page placeholders and chapters already held.
+#[tauri::command]
+pub fn plan_downloads(
+    st: State<'_, AppState>,
+    manga: RemoteManga,
+    chapters: Vec<RemoteChapter>,
+    preferred: Option<String>,
+) -> R<crate::chapter_pick::PlanSummary> {
+    Ok(downloads::plan_bulk(&st.db, &manga, &chapters, preferred.as_deref())?.summary)
 }
 
 /// Record the source's language on the local manga (OCR and translation depend on it).
@@ -625,9 +641,27 @@ async fn set_manga_language(st: &AppState, manga: &RemoteManga, manga_id: i64) {
     }
 }
 
+/// Queue chapters. With `best_only` (download all / a range) one version per chapter is
+/// picked and `preferred` (the group chosen on the page, None = automatic) is remembered;
+/// otherwise the chapters are queued exactly as chosen.
 #[tauri::command]
-pub async fn enqueue_downloads(st: State<'_, AppState>, manga: RemoteManga, chapters: Vec<RemoteChapter>) -> R<Value> {
-    let (added, skipped) = downloads::enqueue(&st.db, &manga, &chapters)?;
+pub async fn enqueue_downloads(
+    st: State<'_, AppState>,
+    manga: RemoteManga,
+    chapters: Vec<RemoteChapter>,
+    best_only: Option<bool>,
+    preferred: Option<String>,
+) -> R<Value> {
+    let (added, skipped, summary) = if best_only.unwrap_or(false) {
+        let plan = downloads::plan_bulk(&st.db, &manga, &chapters, preferred.as_deref())?;
+        let (added, skipped) = downloads::enqueue_picks(&st.db, &manga, &plan.picks, true)?;
+        let mid = downloads::local_manga(&st.db, &manga)?;
+        downloads::set_preference(&st.db, mid, preferred.as_deref())?;
+        (added, skipped, Some(plan.summary))
+    } else {
+        let (added, skipped) = downloads::enqueue(&st.db, &manga, &chapters)?;
+        (added, skipped, None)
+    };
     let manga_id = downloads::local_manga(&st.db, &manga)?;
     set_manga_language(&st, &manga, manga_id).await;
     // cover in the background
@@ -653,7 +687,31 @@ pub async fn enqueue_downloads(st: State<'_, AppState>, manga: RemoteManga, chap
         });
     }
     st.dl_notify.notify_one();
-    Ok(json!({"added": added, "skipped": skipped, "manga_id": manga_id}))
+    Ok(json!({"added": added, "skipped": skipped, "manga_id": manga_id, "plan": summary}))
+}
+
+/// Preview of the duplicate cleanup for a library manga (nothing is changed).
+#[tauri::command]
+pub async fn duplicate_cleanup_plan(st: State<'_, AppState>, manga_id: i64, placeholders: bool) -> R<downloads::CleanupPlan> {
+    let db = st.db.clone();
+    let lib = st.paths.library_dir();
+    blocking(move || downloads::cleanup_plan(&db, &lib, manga_id, placeholders)).await
+}
+
+/// Remove the confirmed extra versions (and placeholders) of a manga's chapters.
+#[tauri::command]
+pub async fn clean_up_duplicates(
+    st: State<'_, AppState>,
+    manga_id: i64,
+    placeholders: bool,
+    chapter_ids: Vec<i64>,
+    download_ids: Vec<i64>,
+) -> R<downloads::CleanupResult> {
+    let db = st.db.clone();
+    let lib = st.paths.library_dir();
+    let out = blocking(move || downloads::cleanup_apply(&db, &lib, manga_id, placeholders, &chapter_ids, &download_ids)).await?;
+    st.dl_notify.notify_one();
+    Ok(out)
 }
 
 #[tauri::command]

@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod catalog;
+pub mod chapter_pick;
 pub mod commands;
 #[cfg(all(target_os = "macos", feature = "dev-snapshot"))]
 mod devsnap;
@@ -309,6 +310,9 @@ macro_rules! app_handlers {
             commands::browse_source,
             commands::remote_manga,
             commands::enqueue_downloads,
+            commands::plan_downloads,
+            commands::duplicate_cleanup_plan,
+            commands::clean_up_duplicates,
             commands::list_downloads,
             commands::download_action,
             commands::clear_finished_downloads,
