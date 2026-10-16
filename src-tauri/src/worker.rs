@@ -272,13 +272,16 @@ impl Vision for PythonWorker {
 
 /// Locate the worker sources and its Python interpreter.
 pub fn resolve(app_data: &Path, resource_dir: Option<&Path>) -> (PathBuf, PathBuf) {
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../worker");
+    let dev = crate::platform::dev_path("../worker");
+    let bundled = resource_dir.map(|r| r.join("worker"));
     let worker_dir = std::env::var_os("MANGAAI_WORKER_DIR")
         .map(PathBuf::from)
         .filter(|p| p.join("mangaai_worker").exists())
-        .or_else(|| dev.join("mangaai_worker").exists().then(|| dev.clone()))
-        .or_else(|| resource_dir.map(|r| r.join("worker")).filter(|p| p.join("mangaai_worker").exists()))
-        .unwrap_or(dev);
+        .or_else(|| dev.clone().filter(|p| p.join("mangaai_worker").exists()))
+        .or_else(|| bundled.clone().filter(|p| p.join("mangaai_worker").exists()))
+        .or(dev)
+        .or(bundled)
+        .unwrap_or_else(|| app_data.join("worker"));
     let venv_bin = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
     let python = [app_data.join("worker-venv").join(venv_bin), worker_dir.join(".venv").join(venv_bin)]
         .into_iter()
@@ -292,12 +295,28 @@ pub fn resolve_native_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
     if !cfg!(windows) {
         return None;
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("windows").join("native");
     resource_dir
         .map(|r| r.join("native"))
         .into_iter()
-        .chain(std::iter::once(dev))
+        .chain(crate::platform::dev_path("windows/native"))
         .find(|d| d.join("fribidi-0.dll").exists())
+}
+
+/// uv shipped with the app (Windows installer), else the dev copy from scripts/fetch-uv.ps1.
+pub fn bundled_uv(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    resource_dir
+        .map(|r| r.join("native").join("uv.exe"))
+        .into_iter()
+        .chain(crate::platform::dev_path("windows/native/uv.exe"))
+        .find(|p| p.exists())
+}
+
+/// The bundled uv first (pinned, nothing for the user to install), then one on the system.
+pub fn find_uv_for(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    bundled_uv(resource_dir).or_else(find_uv)
 }
 
 pub fn find_uv() -> Option<PathBuf> {

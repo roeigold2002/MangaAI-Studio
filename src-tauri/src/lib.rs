@@ -135,14 +135,11 @@ pub fn run() {
 
             let resource_dir = app.path().resource_dir().ok();
             let (worker_dir, python) = worker::resolve(&root, resource_dir.as_deref());
-            let fonts_dir = {
-                let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts");
-                if dev.exists() {
-                    platform::canonicalize(&dev).unwrap_or(dev)
-                } else {
-                    resource_dir.clone().map(|r| r.join("fonts")).unwrap_or(dev)
-                }
-            };
+            let fonts_dir = platform::dev_path("../resources/fonts")
+                .filter(|d| d.exists())
+                .map(|d| platform::canonicalize(&d).unwrap_or(d))
+                .or_else(|| resource_dir.clone().map(|r| r.join("fonts")))
+                .unwrap_or_else(|| root.join("fonts"));
             let models_dir = root.join("models");
             std::fs::create_dir_all(&models_dir)?;
             let vision = Arc::new(PythonWorker::new(WorkerConfig {
@@ -398,6 +395,8 @@ macro_rules! app_handlers {
             commands::validate_store_url,
             commands::apply_source_defaults,
             commands::check_new_chapters,
+            commands::setup_needs,
+            commands::setup_everything,
             commands::sync_now,
             commands::create_backup,
             commands::restore_backup,

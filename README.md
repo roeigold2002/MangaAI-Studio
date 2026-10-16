@@ -50,9 +50,19 @@ Reading and importing need none of the AI parts.
 | uv | the AI engine's Python environment, building FriBiDi | `winget install astral-sh.uv` |
 | WebView2 runtime | the window | preinstalled on Windows 11; the installer fetches it otherwise |
 
-Hebrew shaping needs `fribidi-0.dll` (Pillow's Windows wheels leave it out). `npm run app:dev` and
-`npm run app:build` build it once from the official release with `scripts/build-fribidi.ps1`
-(checksum-verified, MSVC, static CRT) and the installer ships it. Nothing is installed system-wide.
+**For users, one installer is all there is.** The about-18 MB installer ships the app, `fribidi-0.dll`
+(Hebrew shaping; Pillow's Windows wheels leave it out) and a pinned `uv.exe` (0.12.10, SHA-256 checked, which builds
+the AI engine). On first launch, **Home → הכנה בלחיצה אחת** does the rest in one click with live progress:
+1. **AI engine:** installed with the NVIDIA build automatically when an NVIDIA card is found.
+2. **Models:** detection, Japanese and English OCR, LaMa.
+3. **Sources server:** with Keiyoushi, MangaDex and MangaFire.
+
+Steps that are already done are skipped, a failed step can be retried with the same button, and nothing needs a
+restart. Nothing is installed system-wide.
+
+For developers, `npm run app:dev` and `npm run app:build` fetch both once (`scripts/build-fribidi.ps1`: MSVC, static
+CRT, checksum-verified; `scripts/fetch-uv.ps1`: checksum-verified). Release builds never fall back to paths inside the
+source checkout, even on the computer that built them.
 
 **Code signing (Windows):** everything is ready except the certificate itself, which has to be bought.
 - **Options:**

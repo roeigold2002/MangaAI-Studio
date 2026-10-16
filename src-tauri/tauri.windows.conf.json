@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fribidi.ps1 -IfMissing && npm run dev",
-    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fribidi.ps1 -IfMissing && npm run build"
+    "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fribidi.ps1 -IfMissing && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-uv.ps1 -IfMissing && npm run dev",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fribidi.ps1 -IfMissing && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-uv.ps1 -IfMissing && npm run build"
   },
   "bundle": {
     "targets": ["nsis"],
@@ -14,6 +14,7 @@
       "../worker/requirements-cuda-win.txt": "worker/requirements-cuda-win.txt",
       "../resources/fonts/": "fonts/",
       "windows/native/fribidi-0.dll": "native/fribidi-0.dll",
+      "windows/native/uv.exe": "native/uv.exe",
       "windows/native/COPYING-fribidi.txt": "native/COPYING-fribidi.txt"
     },
     "windows": {

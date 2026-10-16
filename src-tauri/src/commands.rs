@@ -20,7 +20,7 @@ use crate::secrets::SecretStore;
 use crate::settings::{self, AppSettings};
 use crate::sources::{RemoteChapter, RemoteManga, SourceAdapter, Suwayomi};
 use crate::translate::memory::{self, GlossaryInput};
-use crate::worker::{find_uv, PythonWorker, Vision};
+use crate::worker::{PythonWorker, Vision};
 
 pub struct AppState {
     pub runtime: Arc<crate::runtime::Runtime>,
@@ -301,7 +301,7 @@ pub async fn engine_status(st: State<'_, AppState>) -> R<Value> {
         "python": cfg.python,
         "worker_dir": cfg.worker_dir,
         "models_dir": cfg.models_dir,
-        "uv": find_uv(),
+        "uv": crate::worker::find_uv_for(st.resource_dir.as_deref()),
         "health": health.as_ref().ok(),
         "error": health.err(),
         "gpus": crate::platform::nvidia_gpus().await,
@@ -325,8 +325,12 @@ fn tail(out: &std::process::Output) -> String {
 /// download.pytorch.org). Without `gpu` the environment is exactly the locked CPU one.
 #[tauri::command]
 pub async fn install_engine(st: State<'_, AppState>, gpu: Option<bool>) -> R<String> {
+    install_engine_inner(&st, gpu.unwrap_or(false)).await
+}
+
+async fn install_engine_inner(st: &AppState, gpu: bool) -> AppResult<String> {
     let install_hint = if cfg!(windows) { "winget install astral-sh.uv" } else { "brew install uv" };
-    let uv = find_uv().ok_or_else(|| AppError::new("uv_missing", format!("uv is required: https://docs.astral.sh/uv/ ({install_hint})")))?;
+    let uv = crate::worker::find_uv_for(st.resource_dir.as_deref()).ok_or_else(|| AppError::new("uv_missing", format!("uv is required: https://docs.astral.sh/uv/ ({install_hint})")))?;
     let cfg = st.worker.config().clone();
     let venv = st.paths.root.join("worker-venv");
     st.worker.shutdown().await;
@@ -339,7 +343,7 @@ pub async fn install_engine(st: State<'_, AppState>, gpu: Option<bool>) -> R<Str
     if !out.status.success() {
         return Err(AppError::new("install_failed", tail(&out)));
     }
-    if gpu == Some(true) {
+    if gpu {
         let req = cuda_requirements(&cfg.worker_dir)
             .ok_or_else(|| AppError::new("unsupported", "the NVIDIA build is only offered for Windows x64"))?;
         // Same torch version as the lock, built for CUDA; it bundles the CUDA runtime and has
@@ -354,9 +358,94 @@ pub async fn install_engine(st: State<'_, AppState>, gpu: Option<bool>) -> R<Str
         if !out.status.success() {
             return Err(AppError::new("install_failed", tail(&out)));
         }
-        return Ok("installed with NVIDIA GPU support — restart the app to use the new engine".into());
+        return Ok("מנוע ה-AI הותקן עם תמיכה בכרטיס המסך NVIDIA".into());
     }
-    Ok("installed — restart the app to use the new engine".into())
+    Ok("מנוע ה-AI הותקן".into())
+}
+
+/// What one-click setup would still do on this computer (for the Home screen).
+#[tauri::command]
+pub async fn setup_needs(st: State<'_, AppState>) -> R<Value> {
+    let cfg = st.worker.config().clone();
+    let health = if cfg.python.exists() { st.worker.health().await.ok() } else { None };
+    let models_ok = health.as_ref().is_some_and(|h| ["detector", "ocr", "ocr_en", "lama"].iter().all(|k| h["models"][*k] == true));
+    let s = settings::load(&st.db)?;
+    let sources_ok = !s.sources.suwayomi_enabled || (s.sources.managed && st.runtime.is_installed()) || (!s.sources.managed && !s.sources.suwayomi_url.is_empty() && s.onboarding_done);
+    let gpus = crate::platform::nvidia_gpus().await;
+    Ok(json!({
+        "engine": health.is_some(),
+        "models": models_ok,
+        "sources": sources_ok,
+        "gpu_offered": cuda_requirements(&cfg.worker_dir).is_some() && !gpus.is_empty(),
+        "gpu_name": gpus.first(),
+        "cuda": health.as_ref().is_some_and(|h| h["cuda"] == true),
+    }))
+}
+
+/// Everything a new install needs, one step after another: the AI engine (with the NVIDIA build
+/// when `gpu`), its models, and the sources server with its default stores and extensions.
+/// Steps already done are skipped; a failed step is reported and the others still run.
+/// Progress goes out as `setup-progress` events {step, status: running|done|skipped|failed, detail}.
+#[tauri::command]
+pub async fn setup_everything(app: tauri::AppHandle, st: State<'_, AppState>, gpu: Option<bool>) -> R<Vec<Value>> {
+    use tauri::Emitter;
+    let mut results = vec![];
+    let mut report = |step: &str, status: &str, detail: String| {
+        let v = json!({"step": step, "status": status, "detail": detail});
+        let _ = app.emit("setup-progress", v.clone());
+        if status != "running" {
+            results.push(v);
+        }
+    };
+
+    // 1. AI engine
+    let cfg = st.worker.config().clone();
+    let health = if cfg.python.exists() { st.worker.health().await.ok() } else { None };
+    let want_gpu = gpu.unwrap_or(false) && cuda_requirements(&cfg.worker_dir).is_some();
+    let has_cuda = health.as_ref().is_some_and(|h| h["cuda"] == true);
+    if health.is_some() && (!want_gpu || has_cuda) {
+        report("engine", "skipped", "already installed".into());
+    } else {
+        report("engine", "running", String::new());
+        match install_engine_inner(&st, want_gpu).await {
+            Ok(m) => report("engine", "done", m),
+            Err(e) => report("engine", "failed", e.message),
+        }
+    }
+
+    // 2. models (only the missing ones are downloaded)
+    report("models", "running", String::new());
+    match st.worker.prepare_models().await {
+        Ok(_) => report("models", "done", String::new()),
+        Err(e) => report("models", "failed", e.message),
+    }
+
+    // 3. sources: managed Suwayomi with the default stores and extensions
+    let s = settings::load(&st.db)?;
+    if !s.sources.suwayomi_enabled || (!s.sources.managed && !s.sources.suwayomi_url.is_empty() && s.onboarding_done) {
+        report("sources", "skipped", "a server of your own is configured".into());
+    } else {
+        report("sources", "running", String::new());
+        match setup_sources(app.clone(), st.clone()).await {
+            Ok(_) => {
+                // The server lists a new extension's sources a moment after installing it; refresh
+                // the screens only once they are there, so "manga sites: none" is not shown.
+                if let Ok(sw) = suwayomi(&st) {
+                    for _ in 0..15 {
+                        let ready = sw.sources().await.map(|l| l.iter().any(|s| crate::catalog::is_website(&s.id))).unwrap_or(false);
+                        if ready {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+                let _ = app.emit("sources-changed", json!({}));
+                report("sources", "done", String::new())
+            }
+            Err(e) => report("sources", "failed", e.message),
+        }
+    }
+    Ok(results)
 }
 
 #[tauri::command]

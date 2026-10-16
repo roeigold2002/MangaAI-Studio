@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  BackupReport, CheckReport, MergeReport,
+  BackupReport, CheckReport, MergeReport, SetupNeeds, SetupStep,
   Category, ChapterView, Download, EditorPage, EngineStatus, Estimate, GlossaryEntry, HistoryEntry, HomeData, ImportReport,
   Job, MangaDetail, MangaSummary, MemoryEntry, PageState, Region, RemoteChapter, RemoteDetail, RemoteManga, Settings, SourceInfo,
   SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus, InstalledSource, SourcePreference,
@@ -98,6 +98,8 @@ export const api = {
   addStore: (url: string) => invoke<ExtensionStore>("add_store", { url }),
   checkNewChapters: () => invoke<CheckReport>("check_new_chapters"),
   syncNow: () => invoke<MergeReport>("sync_now"),
+  setupNeeds: () => invoke<SetupNeeds>("setup_needs"),
+  setupEverything: (gpu: boolean) => invoke<SetupStep[]>("setup_everything", { gpu }),
   createBackup: (path: string, includeChapters: boolean) => invoke<BackupReport>("create_backup", { path, includeChapters }),
   restoreBackup: (path: string) => invoke<number>("restore_backup", { path }),
   applySourceDefaults: () => invoke<{ stores_added: string[]; extensions_installed: string[] }>("apply_source_defaults"),

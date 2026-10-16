@@ -48,6 +48,12 @@ pub fn simplify(p: PathBuf) -> PathBuf {
     p
 }
 
+/// A path inside the source checkout, for development builds only. An installed (release) app
+/// must use its bundled resources, even on the computer it was built on.
+pub fn dev_path(rel: &str) -> Option<PathBuf> {
+    cfg!(debug_assertions).then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel))
+}
+
 /// Executable file name for this platform (`uv` → `uv.exe` on Windows).
 pub fn exe(name: &str) -> String {
     if cfg!(windows) {

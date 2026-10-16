@@ -142,6 +142,8 @@ export interface CleanupEntry {
 export interface CleanupPlan { manga_id: number; remove: CleanupEntry[]; kept: number; preferred: string | null; bytes: number }
 export interface CleanupResult { chapters_removed: number; downloads_cancelled: number; bytes_freed: number }
 
+export interface SetupNeeds { engine: boolean; models: boolean; sources: boolean; gpu_offered: boolean; gpu_name: string | null; cuda: boolean }
+export interface SetupStep { step: "engine" | "models" | "sources"; status: "running" | "done" | "skipped" | "failed"; detail: string }
 export interface MergeReport {
   series_added: string[]; series_elsewhere: string[]; chapters_updated: number; glossary_updated: number;
   memory_added: number; favorites_changed: number;

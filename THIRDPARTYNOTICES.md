@@ -25,6 +25,10 @@ Built unmodified from the release tarball by `scripts/build-fribidi.ps1` (SHA-25
 as a separate DLL that Pillow loads at run time, so it can be replaced with any compatible build.
 Pillow's Windows wheels include HarfBuzz and libraqm but leave FriBiDi to the application.
 
+### uv (Windows builds only: `native/uv.exe`)
+uv 0.12.10 by Astral, MIT OR Apache-2.0, github.com/astral-sh/uv. The official release binary, unmodified
+(`scripts/fetch-uv.ps1` checks its SHA-256); it creates the AI engine's Python environment from `worker/uv.lock`.
+
 ### PyTorch NVIDIA build (Windows, optional)
 `worker/requirements-cuda-win.txt` pins torch 2.14.1+cu130 (BSD-3-Clause; bundles NVIDIA CUDA runtime
 libraries under the NVIDIA CUDA EULA). Downloaded from download.pytorch.org only when the user enables

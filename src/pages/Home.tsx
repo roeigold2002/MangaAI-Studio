@@ -8,6 +8,7 @@ import { Cover, ErrorBox, MangaCard, Progress } from "../components/ui";
 import { ImportButtons } from "../components/ImportButton";
 import { SourceGate, sourceState } from "../components/SourceGate";
 import { ProviderSetup } from "../components/TranslateFlow";
+import { OneClickSetup } from "../components/OneClickSetup";
 
 export default function HomePage() {
   const nav = useNavigate();
@@ -42,6 +43,7 @@ export default function HomePage() {
         <p className="muted small">חיפוש ← הורדה ← הספרייה שלי ← תרגום לעברית ← קריאה</p>
       </form>
 
+      <OneClickSetup />
       {firstRun && (
         <div className="panel tone col" style={{ gap: 14, marginTop: 22 }}>
           <div className="spread"><h2>ברוך הבא</h2><button className="btn ghost sm" onClick={finishOnboarding}>הסתרה</button></div>
