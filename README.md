@@ -54,6 +54,24 @@ Hebrew shaping needs `fribidi-0.dll` (Pillow's Windows wheels leave it out). `np
 `npm run app:build` build it once from the official release with `scripts/build-fribidi.ps1`
 (checksum-verified, MSVC, static CRT) and the installer ships it. Nothing is installed system-wide.
 
+**Code signing (Windows):** everything is ready except the certificate itself, which has to be bought.
+- **Options:**
+  - **Azure Trusted Signing** (about $10/month; the cheapest; a SmartScreen reputation builds quickly).
+  - An **OV** certificate from a certificate authority (about $200–400/year; SmartScreen warnings fade as downloads accumulate).
+  - An **EV** certificate (more expensive; trusted by SmartScreen right away).
+- **Local signed build:**
+  1. Set `MANGAAI_SIGN_PFX` and `MANGAAI_SIGN_PFX_PASSWORD` (or the Azure variables listed in `scripts/sign-windows.ps1`).
+  2. Run `.\scriptsuild-signed.ps1`. It signs the app, the bundled DLLs, the NSIS plugins, the uninstaller and the
+     installer, adds an RFC 3161 timestamp, and finally prints the installer's Authenticode status.
+- **Releases:** add the repository secrets `WINDOWS_CERTIFICATE` (the .pfx as base64) and `WINDOWS_CERTIFICATE_PASSWORD`, or
+  `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` plus the variables `TRUSTED_SIGNING_ENDPOINT`,
+  `TRUSTED_SIGNING_ACCOUNT` and `TRUSTED_SIGNING_PROFILE`. `release.yml` then signs automatically; without them it builds
+  unsigned as before.
+- **Ordinary builds:** `npm run app:build` never signs and needs no Windows SDK. The signing settings live in
+  `src-tauri/tauri.signing.conf.json`, which is applied only for a signed build.
+- **Verified:** with a self-signed test certificate (kept as a file; nothing was added to the Windows certificate store),
+  the installed app, DLL and uninstaller all carried the signature and a DigiCert timestamp.
+
 **NVIDIA GPU (optional, Windows):** PyPI's Windows PyTorch is CPU-only. With an NVIDIA card, Translation
 settings → AI engine offers "use the NVIDIA GPU": the locked environment is installed as usual, then torch
 is swapped for the same version built for CUDA 13.0 (hash-pinned in `worker/requirements-cuda-win.txt`;
@@ -317,5 +335,6 @@ cd src-tauri && cargo run --example suwayomi_managed
   (`cargo run --example suwayomi_managed`, which also installs the default extensions and lists the English sources).
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
   was not run there.
-- Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. The installer is not
-  code-signed, so SmartScreen may ask for confirmation on first run ("More info" → "Run anyway").
+- Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. Until a code-signing
+  certificate is configured (see "Code signing (Windows)"), the installer is unsigned and SmartScreen may ask for
+  confirmation on first run ("More info" → "Run anyway").

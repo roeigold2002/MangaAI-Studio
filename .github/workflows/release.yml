@@ -92,12 +92,39 @@ jobs:
             c.bundle.createUpdaterArtifacts = true;
             fs.writeFileSync(f, JSON.stringify(c, null, 2));'
 
+      # Windows code signing, only when its secrets exist (otherwise the installer stays unsigned):
+      # WINDOWS_CERTIFICATE (.pfx as base64) + WINDOWS_CERTIFICATE_PASSWORD, or Azure Trusted Signing
+      # (AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET + variables TRUSTED_SIGNING_ENDPOINT,
+      # TRUSTED_SIGNING_ACCOUNT, TRUSTED_SIGNING_PROFILE). See scripts/sign-windows.ps1.
+      - name: Code signing setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HAS_PFX: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+          HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+        run: |
+          if ($env:HAS_PFX -ne 'true' -and $env:HAS_AZURE -ne 'true') { Write-Host "No signing secrets: unsigned build"; exit 0 }
+          if ($env:HAS_AZURE -eq 'true') { cargo install trusted-signing-cli --locked }
+          $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+          "TAURI_WINDOWS_SIGNTOOL_PATH=$($tool.FullName)" >> $env:GITHUB_ENV
+          "SIGN_ARGS=--config src-tauri/tauri.signing.conf.json" >> $env:GITHUB_ENV
+
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          MANGAAI_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE }}
+          MANGAAI_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          MANGAAI_TS_ENDPOINT: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          MANGAAI_TS_ACCOUNT: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+          MANGAAI_TS_PROFILE: ${{ vars.TRUSTED_SIGNING_PROFILE }}
         with:
+          args: ${{ env.SIGN_ARGS }}
           releaseId: ${{ needs.draft.outputs.release_id }}
           # written once below, after both platforms have uploaded (avoids two jobs racing on one file)
           uploadUpdaterJson: false
