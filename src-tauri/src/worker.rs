@@ -59,7 +59,7 @@ pub trait Vision: Send + Sync {
     async fn prepare_models(&self) -> AppResult<Value>;
     /// Version strings that are part of cache keys.
     fn versions(&self) -> (String, String, String) {
-        ("a2".into(), "i2".into(), "r1".into())
+        ("a2".into(), "i3".into(), "r1".into())
     }
 }
 
@@ -70,6 +70,8 @@ pub struct WorkerConfig {
     pub models_dir: PathBuf,
     pub fonts_dir: PathBuf,
     pub log_path: PathBuf,
+    /// Folder with native libraries the worker loads at run time (fribidi-0.dll on Windows).
+    pub native_dir: Option<PathBuf>,
 }
 
 struct Proc {
@@ -102,6 +104,7 @@ impl PythonWorker {
         }
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.cfg.log_path)?;
         let mut cmd = tokio::process::Command::new(&self.cfg.python);
+        crate::platform::no_window(&mut cmd);
         cmd.arg("-m")
             .arg("mangaai_worker")
             .current_dir(&self.cfg.worker_dir)
@@ -110,17 +113,28 @@ impl PythonWorker {
             .env("MANGAAI_MODELS_DIR", &self.cfg.models_dir)
             .env("TOKENIZERS_PARALLELISM", "false")
             .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-            // Pillow loads libraqm/fribidi dynamically; GUI apps don't see Homebrew's lib dir.
-            .env("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib")
+            // The protocol is UTF-8 on every platform (Windows defaults to the ANSI code page).
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8")
+            // Windows without Developer Mode has no symlinks; the cache works, the warning is noise.
+            .env("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(log))
             .kill_on_drop(true);
+        if cfg!(target_os = "macos") {
+            // Pillow loads libraqm/fribidi dynamically; GUI apps don't see Homebrew's lib dir.
+            cmd.env("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib");
+        }
+        if let Some(d) = &self.cfg.native_dir {
+            cmd.env("MANGAAI_NATIVE_DIR", d);
+        }
         if !allow_network {
             // No hidden downloads: models load from the local cache only.
             cmd.env("HF_HUB_OFFLINE", "1").env("TRANSFORMERS_OFFLINE", "1");
         }
         let mut child = cmd.spawn().map_err(|e| AppError::new("engine_start", format!("could not start the AI engine: {e}")))?;
+        crate::platform::adopt(&child);
         let stdin = child.stdin.take().ok_or_else(|| AppError::new("engine_start", "no stdin"))?;
         let stdout = BufReader::new(child.stdout.take().ok_or_else(|| AppError::new("engine_start", "no stdout"))?);
         Ok(Proc { child, stdin, stdout })
@@ -269,15 +283,36 @@ pub fn resolve(app_data: &Path, resource_dir: Option<&Path>) -> (PathBuf, PathBu
         .into_iter()
         .find(|p| p.exists())
         .unwrap_or_else(|| app_data.join("worker-venv").join(venv_bin));
-    (worker_dir.canonicalize().unwrap_or(worker_dir), python)
+    (crate::platform::canonicalize(&worker_dir).unwrap_or(worker_dir), python)
+}
+
+/// Folder holding fribidi-0.dll (Windows only): bundled resources, else the dev build output.
+pub fn resolve_native_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("windows").join("native");
+    resource_dir
+        .map(|r| r.join("native"))
+        .into_iter()
+        .chain(std::iter::once(dev))
+        .find(|d| d.join("fribidi-0.dll").exists())
 }
 
 pub fn find_uv() -> Option<PathBuf> {
     which::which("uv").ok().or_else(|| {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        [home.join(".local/bin/uv"), home.join(".cargo/bin/uv"), PathBuf::from("/opt/homebrew/bin/uv"), PathBuf::from("/usr/local/bin/uv")]
-            .into_iter()
-            .find(|p| p.exists())
+        let home = crate::platform::home_dir();
+        let uv = crate::platform::exe("uv");
+        let mut candidates = vec![home.join(".local/bin").join(&uv), home.join(".cargo/bin").join(&uv)];
+        if cfg!(windows) {
+            if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+                candidates.push(local.join("Microsoft/WinGet/Links/uv.exe"));
+                candidates.push(local.join("Programs/uv/uv.exe"));
+            }
+        } else {
+            candidates.extend([PathBuf::from("/opt/homebrew/bin/uv"), PathBuf::from("/usr/local/bin/uv")]);
+        }
+        candidates.into_iter().find(|p| p.exists())
     })
 }
 

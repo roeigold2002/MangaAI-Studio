@@ -50,6 +50,14 @@ fs4 = "1"
 # Debug aid: lets the frontend save PNG snapshots of the webview (visual QA without screen-recording rights).
 dev-snapshot = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
 
+# A second launch focuses the running window instead of starting another queue runner,
+# worker and Suwayomi against the same library (macOS already enforces this for .app bundles).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }

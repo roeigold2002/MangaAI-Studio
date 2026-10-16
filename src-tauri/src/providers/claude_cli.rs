@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -15,23 +15,81 @@ pub struct ClaudeCli {
 }
 
 /// GUI apps on macOS get a minimal PATH, so look in the usual install locations too.
+/// On Windows an npm `claude.cmd` shim is resolved to the program it starts: batch files
+/// run through cmd.exe, which cannot pass multi-line or quoted arguments reliably.
 pub fn find_claude(explicit: &str) -> Option<PathBuf> {
     if !explicit.trim().is_empty() {
         let p = PathBuf::from(explicit.trim());
-        return p.exists().then_some(p);
+        return p.exists().then(|| resolve_shim(&p).unwrap_or(p));
     }
     if let Ok(p) = which::which("claude") {
-        return Some(p);
+        if let Some(target) = resolve_shim(&p) {
+            return Some(target);
+        }
+        if !is_batch(&p) {
+            return Some(p);
+        }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    [
-        home.join(".local/bin/claude"),
-        home.join(".claude/local/claude"),
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-    ]
-    .into_iter()
-    .find(|p| p.exists())
+    let home = crate::platform::home_dir();
+    let mut candidates = vec![
+        home.join(".local/bin").join(crate::platform::exe("claude")),
+        home.join(".claude/local").join(crate::platform::exe("claude")),
+    ];
+    if cfg!(windows) {
+        if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            let pkg = appdata.join("npm/node_modules/@anthropic-ai/claude-code");
+            candidates.push(pkg.join("bin/claude.exe"));
+            candidates.push(pkg.join("cli.js"));
+        }
+    } else {
+        candidates.extend([PathBuf::from("/opt/homebrew/bin/claude"), PathBuf::from("/usr/local/bin/claude")]);
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn is_batch(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+}
+
+/// The program an npm-style `.cmd` shim launches (`"%dp0%\node_modules\…\claude.exe" %*`,
+/// or `cli.js` under node in older shims). None if `p` is not a shim or its target is gone.
+pub fn resolve_shim(p: &Path) -> Option<PathBuf> {
+    if !is_batch(p) {
+        return None;
+    }
+    let text = std::fs::read_to_string(p).ok()?;
+    shim_target(&text, p.parent()?)
+}
+
+fn shim_target(text: &str, dir: &Path) -> Option<PathBuf> {
+    text.split('"')
+        .map(str::trim)
+        .filter(|t| {
+            let l = t.to_ascii_lowercase();
+            (l.starts_with("%dp0%") || l.starts_with("%~dp0")) && [".exe", ".js", ".cjs", ".mjs"].iter().any(|x| l.ends_with(x))
+        })
+        .map(|t| {
+            let rel = t.trim_start_matches("%dp0%").trim_start_matches("%~dp0").trim_start_matches(['\\', '/']);
+            rel.split(['\\', '/']).filter(|c| !c.is_empty()).fold(dir.to_path_buf(), |acc, c| acc.join(c))
+        })
+        .find(|t| t.exists())
+}
+
+/// Program and leading arguments that start what `find_claude` returned (a JS entry runs under node).
+fn launcher(found: &Path) -> Result<(PathBuf, Vec<std::ffi::OsString>), ProviderError> {
+    let ext = found.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if matches!(ext.as_str(), "js" | "cjs" | "mjs") {
+        let node = which::which("node")
+            .map_err(|_| ProviderError::new(ErrorKind::Unavailable, "Claude CLI needs Node.js, which was not found"))?;
+        return Ok((node, vec![found.as_os_str().to_owned()]));
+    }
+    if is_batch(found) {
+        return Err(ProviderError::new(
+            ErrorKind::Unavailable,
+            format!("{} is a batch file; set the path to claude.exe in the provider settings", found.display()),
+        ));
+    }
+    Ok((found.to_path_buf(), vec![]))
 }
 
 impl ClaudeCli {
@@ -116,14 +174,22 @@ impl TranslationProvider for ClaudeCli {
             }
         }
         let schema = serde_json::to_string(&req.schema).unwrap_or_default();
-        let mut cmd = tokio::process::Command::new(&bin);
-        cmd.arg("-p")
+        // The system prompt is long and multi-line: pass it as a file, not an argument
+        // (Windows command lines are length-limited and quoting newlines is unreliable).
+        let system_file = workdir.path().join("system-prompt.txt");
+        std::fs::write(&system_file, &req.system).map_err(|e| ProviderError::new(ErrorKind::Unavailable, e.to_string()))?;
+        let (program, prefix) = launcher(&bin)?;
+        let mut cmd = tokio::process::Command::new(&program);
+        crate::platform::no_window(&mut cmd);
+        cmd.args(&prefix)
+            .arg("-p")
             .args(["--output-format", "json"])
             .arg("--no-session-persistence")
             .args(["--setting-sources", ""])
             .arg("--strict-mcp-config")
             .arg("--disable-slash-commands")
-            .args(["--system-prompt", &req.system])
+            .arg("--system-prompt-file")
+            .arg(&system_file)
             .args(["--json-schema", &schema])
             .args(["--effort", &req.effort]);
         if !self.cfg.model.trim().is_empty() {
@@ -175,6 +241,31 @@ mod tests {
         assert_eq!(r.usage.reported_cost_usd, Some(0.0012));
         assert_eq!(r.usage.input_tokens, Some(102));
         assert_eq!(r.model, "claude-haiku-5-5");
+    }
+
+    #[test]
+    fn resolves_npm_shims() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        let shim = d.path().join("claude.cmd");
+        // the shim npm writes on Windows
+        let text = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\
+                    \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n";
+        std::fs::write(&shim, text).unwrap();
+        let same = |a: &Path, b: &Path| assert_eq!(a.canonicalize().unwrap(), b.canonicalize().unwrap());
+        same(&resolve_shim(&shim).unwrap(), &exe);
+        same(&find_claude(shim.to_str().unwrap()).unwrap(), &exe);
+        assert_eq!(launcher(&exe).unwrap(), (exe.clone(), vec![]));
+
+        // older shims start node with the JS entry
+        let js = d.path().join("node_modules/@anthropic-ai/claude-code/cli.js");
+        std::fs::write(&js, b"").unwrap();
+        let old = "\"%_prog%\"  \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*";
+        same(&shim_target(old, d.path()).unwrap(), &js);
+        assert!(resolve_shim(&js).is_none(), "not a shim");
+        assert!(launcher(&shim).is_err(), "batch files are never started directly");
     }
 
     #[test]

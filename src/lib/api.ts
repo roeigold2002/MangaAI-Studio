@@ -34,7 +34,7 @@ export const api = {
   ollamaModels: (endpoint: string) => invoke<string[]>("list_ollama_models", { endpoint }),
   claudeCliStatus: (path?: string) => invoke<{ found: boolean; path: string | null }>("claude_cli_status", { path }),
   engineStatus: () => invoke<EngineStatus>("engine_status"),
-  installEngine: () => invoke<string>("install_engine"),
+  installEngine: (gpu = false) => invoke<string>("install_engine", { gpu }),
   prepareModels: () => invoke<unknown>("prepare_models"),
   // translation
   estimate: (chapterIds: number[]) => invoke<Estimate>("estimate_translation", { chapterIds }),

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: () => "mangaimg://localhost/" }));
 
-import { arrowStep, chapterTranslationBadge, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
+import { arrowStep, chapterTranslationBadge, credentialStoreName, detectPlatform, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
 
 const p = (w = 100, h = 140) => ({ width: w, height: h });
 
@@ -58,5 +58,17 @@ describe("publicationStatus", () => {
     expect(publicationStatus("ONGOING")).toBe("בהמשכים");
     expect(publicationStatus("UNKNOWN")).toBe("");
     expect(publicationStatus(null)).toBe("");
+  });
+});
+
+describe("platform", () => {
+  it("detects the OS from the webview user agent", () => {
+    expect(detectPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/155.0")).toBe("windows");
+    expect(detectPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("mac");
+    expect(detectPlatform("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15")).toBe("linux");
+  });
+  it("names the credential store of each OS", () => {
+    expect(credentialStoreName("windows")).toContain("Windows");
+    expect(credentialStoreName("mac")).toContain("Keychain");
   });
 });

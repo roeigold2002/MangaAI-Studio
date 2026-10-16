@@ -10,6 +10,7 @@ pub mod error;
 pub mod jobs;
 pub mod library;
 pub mod pipeline;
+pub mod platform;
 pub mod protocol;
 pub mod providers;
 pub mod runtime;
@@ -70,7 +71,16 @@ fn remote_image(st: &AppState, hex_url: &str) -> protocol::Reply {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("mangaimg", |ctx, request, responder| {
@@ -115,7 +125,7 @@ pub fn run() {
             let fonts_dir = {
                 let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts");
                 if dev.exists() {
-                    dev.canonicalize().unwrap_or(dev)
+                    platform::canonicalize(&dev).unwrap_or(dev)
                 } else {
                     resource_dir.clone().map(|r| r.join("fonts")).unwrap_or(dev)
                 }
@@ -128,6 +138,7 @@ pub fn run() {
                 models_dir,
                 fonts_dir,
                 log_path: paths.logs_dir().join("worker.log"),
+                native_dir: worker::resolve_native_dir(resource_dir.as_deref()),
             }));
             let events: Arc<dyn EventSink> = Arc::new(TauriEvents(app.handle().clone()));
             let engine = Engine::new(db.clone(), paths.clone(), vision.clone(), events.clone());
@@ -179,6 +190,19 @@ pub fn run() {
                     use tokio::signal::unix::{signal, SignalKind};
                     let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else { return };
                     tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+                    w.shutdown().await;
+                    r.stop().await;
+                    handle.exit(0);
+                });
+            }
+            #[cfg(windows)]
+            {
+                // Ctrl+C / closing the console of a dev build: stop children before exiting.
+                let (r, w, handle) = (runtime.clone(), vision.clone(), app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::windows::{ctrl_c, ctrl_close};
+                    let (Ok(mut c), Ok(mut close)) = (ctrl_c(), ctrl_close()) else { return };
+                    tokio::select! { _ = c.recv() => {}, _ = close.recv() => {} }
                     w.shutdown().await;
                     r.stop().await;
                     handle.exit(0);

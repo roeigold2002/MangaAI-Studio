@@ -98,6 +98,14 @@ def lama(device: str):
                 raise ModelUnavailable(f"inpainting model not found at {p}")
             import torch
 
+            # LaMa is TorchScript. The profiling executor re-optimizes the graph for every new
+            # input shape (1-2 s each on an RTX 5080), and every text crop has its own shape;
+            # the legacy executor optimizes once, after which new shapes cost ~0.05 s.
+            try:
+                torch._C._jit_set_profiling_executor(False)
+                torch._C._jit_set_profiling_mode(False)
+            except AttributeError:  # private API; keep working if a future torch drops it
+                pass
             m = torch.jit.load(str(p), map_location="cpu")
             m.eval()
             try:

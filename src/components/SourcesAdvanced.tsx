@@ -4,7 +4,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { Compass, Download, FolderOpen, Plus, Power, RefreshCw, Search, Trash2 } from "lucide-react";
 import { api, errMessage } from "../lib/api";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
-import { langName, remoteUrl } from "../lib/util";
+import { credentialStoreName, langName, remoteUrl } from "../lib/util";
 import { Empty, ErrorBox, Field, Modal, Spinner } from "./ui";
 import { SourceGate, sourceState } from "./SourceGate";
 import type { Extension, InstalledSource, SourcePreference } from "../lib/types";
@@ -81,7 +81,7 @@ function EngineAndConnection({ onChanged }: { onChanged: () => void }) {
       <div className="grid-form">
         <Field label="כתובת השרת"><input className="input ltr" value={s.suwayomi_url} onChange={(e) => setS({ ...s, suwayomi_url: e.target.value })} /></Field>
         <Field label="שם משתמש (אם הוגדרה הזדהות)"><input className="input ltr" value={s.suwayomi_user} onChange={(e) => setS({ ...s, suwayomi_user: e.target.value })} /></Field>
-        <Field label="סיסמה" hint="נשמרת ב-Keychain"><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
+        <Field label="סיסמה" hint={`נשמרת ב${credentialStoreName()}`}><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
         <Field label="הורדות במקביל" hint="נכנס לתוקף אחרי הפעלה מחדש"><input className="input" type="number" min={1} max={6} value={s.download_concurrency} onChange={(e) => setS({ ...s, download_concurrency: Number(e.target.value) })} /></Field>
       </div>
       <Field label="שפות לחיפוש" hint="מקורות כמו MangaDex מותקנים כמקור נפרד לכל שפה. החיפוש רץ רק על השפות שנבחרו. זיהוי הטקסט לתרגום תומך כרגע ביפנית.">

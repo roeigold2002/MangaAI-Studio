@@ -9,6 +9,7 @@ numbers and punctuation are placed by the bidi algorithm, not by us.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -30,9 +31,13 @@ def raqm_available() -> bool:
 
 def require_raqm() -> None:
     if not raqm_available():
+        if sys.platform == "win32":
+            hint = ("fribidi-0.dll was not found. Reinstall the app, or for a development build run "
+                    "scripts\\build-fribidi.ps1, then restart the AI engine.")
+        else:
+            hint = "Install fribidi (e.g. `brew install fribidi`) and restart the AI engine."
         raise RenderError(
-            "Pillow was loaded without libraqm (HarfBuzz/FriBidi). Hebrew cannot be shaped correctly; "
-            "install fribidi (e.g. `brew install fribidi`) and restart the AI engine."
+            f"Pillow was loaded without libraqm (HarfBuzz/FriBidi). Hebrew cannot be shaped correctly. {hint}"
         )
 
 

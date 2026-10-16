@@ -47,6 +47,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Windows draws classic light scrollbars even under color-scheme: dark; match the theme. */
+* { scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
 html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--ink);
@@ -79,6 +81,10 @@ p { margin: 0; }
 /* ---------- shell ---------- */
 .shell { display: grid; grid-template-columns: var(--sidebar) 1fr; height: 100%; }
 .titlebar-drag { position: fixed; inset: 0 0 auto 0; height: 28px; z-index: 50; }
+/* Native title bar (Windows/Linux): no drag strip over the content, no room for traffic lights. */
+:root:not([data-platform="mac"]) .titlebar-drag { display: none; }
+:root:not([data-platform="mac"]) .sidebar { padding-top: 16px; }
+:root:not([data-platform="mac"]) .reader-bar.top { padding-top: 10px; }
 .sidebar {
   background: var(--surface);
   border-inline-end: 1px solid var(--line);

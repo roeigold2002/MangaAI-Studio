@@ -1,8 +1,9 @@
 # MangaAI Studio
 
 A personal desktop manga reader with AI translation into Hebrew. Local-first, single user,
-no account, no telemetry. macOS (Apple Silicon) is the tested platform. The stack (Tauri 2 +
-React, Rust core, Python worker) also targets Windows and Linux, but those builds are untested.
+no account, no telemetry. Runs natively on macOS (Apple Silicon) and Windows 10/11 x64; both are tested
+end to end (import, OCR, translation, Hebrew typesetting, managed Suwayomi). The stack is Tauri 2 +
+React, a Rust core and a Python worker; Linux builds and tests pass but the window is untested there.
 
 - **Library**: import image folders, CBZ and ZIP (originals are never modified), natural page
   order (`2.jpg` < `10.jpg`), rescan for new chapters, categories, favorites, read state, history.
@@ -13,7 +14,8 @@ React, Rust core, Python worker) also targets Windows and Linux, but those build
   translation memory, previous lines, optional page images) → text removal (LaMa) → Hebrew
   typesetting with HarfBuzz/FriBidi. Results are cached on disk; reopening a translated page costs nothing.
 - **Providers**: Claude Code CLI (your Claude login, no API key), Anthropic API, OpenAI, Gemini,
-  Ollama (local), any OpenAI-compatible server. API keys go in the macOS Keychain.
+  Ollama (local), any OpenAI-compatible server. API keys go in the OS credential store
+  (macOS Keychain / Windows Credential Manager).
 - **Editor**: fix OCR text, edit and approve translations (stored in translation memory and never
   overwritten), font size/alignment/position, add or delete regions, change reading order,
   re-run OCR or translation for one region, restore the original, compare with the previous render.
@@ -38,6 +40,26 @@ upstream review: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md) · l
 
 Reading and importing need none of the AI parts.
 
+### Windows
+
+| | Needed for | Install |
+|---|---|---|
+| Node 20+ and npm | building the UI | `winget install OpenJS.NodeJS` |
+| Rust (stable, MSVC) | building the app | `winget install Rustlang.Rustup` |
+| Visual Studio 2022+ or Build Tools with "Desktop development with C++" | Rust linker, FriBiDi | `winget install Microsoft.VisualStudio.2022.BuildTools` |
+| uv | the AI engine's Python environment, building FriBiDi | `winget install astral-sh.uv` |
+| WebView2 runtime | the window | preinstalled on Windows 11; the installer fetches it otherwise |
+
+Hebrew shaping needs `fribidi-0.dll` (Pillow's Windows wheels leave it out). `npm run app:dev` and
+`npm run app:build` build it once from the official release with `scripts/build-fribidi.ps1`
+(checksum-verified, MSVC, static CRT) and the installer ships it. Nothing is installed system-wide.
+
+**NVIDIA GPU (optional, Windows):** PyPI's Windows PyTorch is CPU-only. With an NVIDIA card, Translation
+settings → AI engine offers "use the NVIDIA GPU": the locked environment is installed as usual, then torch
+is swapped for the same version built for CUDA 13.0 (hash-pinned in `worker/requirements-cuda-win.txt`;
+Turing through Blackwell GPUs, driver 580+). Measured on an RTX 5080: detection + OCR 3.5× and LaMa text
+removal about 9× faster than the CPU build. Unticking it and reinstalling returns to the exact CPU lock.
+
 ## Build and run
 
 ```bash
@@ -48,7 +70,8 @@ npm install
 npm run app:dev
 ```
 
-Release build (creates `src-tauri/target/release/bundle/macos/MangaAI Studio.app` and a `.dmg`):
+Release build (macOS: `src-tauri/target/release/bundle/macos/MangaAI Studio.app` and a `.dmg`;
+Windows: `src-tauri/target/release/bundle/nsis/MangaAI Studio_<version>_x64-setup.exe`, a per-user installer):
 
 ```bash
 npm run app:build
@@ -65,7 +88,14 @@ Either in the app (**Translation settings → AI engine → Install**, then **Do
 ./scripts/setup-worker.sh
 ```
 
-This creates `~/Library/Application Support/com.mangaai.studio/worker-venv` from the locked
+On Windows (PowerShell):
+
+```powershell
+.\scripts\setup-worker.ps1
+```
+
+This creates `~/Library/Application Support/com.mangaai.studio/worker-venv` (Windows:
+`%APPDATA%\com.mangaai.studio\worker-venv`) from the locked
 `worker/uv.lock` and downloads three models (detector and OCR from Hugging Face, LaMa from
 GitHub). After that the engine runs offline: the worker is started with `HF_HUB_OFFLINE=1`.
 
@@ -87,7 +117,8 @@ Open **Translation settings**, pick a provider, and press **Test connection**.
 
 Before the first cloud translation you must accept the privacy notice. It explains that page text,
 and page images if enabled, are sent to the provider. **Local-only mode** blocks every cloud
-provider. Keys are stored in the macOS Keychain under the service `com.mangaai.studio`.
+provider. Keys are stored in the macOS Keychain / Windows Credential Manager under the service
+`com.mangaai.studio`.
 
 ## Discover → download → library → translate → read
 
@@ -139,7 +170,8 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
 
 ## Where things are stored
 
-`~/Library/Application Support/com.mangaai.studio/` (override with `MANGAAI_DATA_DIR`):
+`~/Library/Application Support/com.mangaai.studio/` on macOS, `%APPDATA%\com.mangaai.studio\` on Windows
+(override with `MANGAAI_DATA_DIR`):
 
 ```
 library.db        SQLite: library, progress, OCR, translations, glossary, memory, jobs
@@ -164,6 +196,8 @@ cd src-tauri && cargo test
 cd worker && DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib uv run --managed-python pytest -q
 ```
 
+On Windows run it without the variable; the tests load `src-tauri\windows\native\fribidi-0.dll`.
+
 ```bash
 npm test
 ```
@@ -187,6 +221,12 @@ with "retry failed pages". The live Suwayomi check (needs a running server):
 cd src-tauri && cargo run --example suwayomi_live -- http://127.0.0.1:4567 local
 ```
 
+The managed Suwayomi install itself (download, checksum, start, GraphQL, stop):
+
+```bash
+cd src-tauri && cargo run --example suwayomi_managed
+```
+
 (Create the CBZ first: `cd tests/fixtures/pepper_ep06_ja && zip -0 ../generated/pepper_ep06_ja.cbz *.jpg`.)
 
 ## Known limitations
@@ -201,5 +241,6 @@ cd src-tauri && cargo run --example suwayomi_live -- http://127.0.0.1:4567 local
   extension store chosen by the user. The live tests used the official store's "Suwayomi" extension and
   the server's Local source.
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
-  was not run there. Windows: the app and its test binaries cross-compile and link for x86_64 Windows (MinGW), but
-  were not run (no Windows machine available).
+  was not run there.
+- Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. The installer is not
+  code-signed, so SmartScreen may ask for confirmation on first run ("More info" → "Run anyway").

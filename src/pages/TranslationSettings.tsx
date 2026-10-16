@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, KeyRound, ShieldCheck } from "lucide-react";
 import { api, errMessage } from "../lib/api";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
-import { usd } from "../lib/util";
+import { credentialStoreName, platform, usd } from "../lib/util";
 import { Field, Spinner } from "../components/ui";
 import type { ProviderConfig, Settings } from "../lib/types";
 
@@ -76,7 +76,7 @@ export default function TranslationSettingsPage({ embedded = false }: { embedded
           <p className="muted">
             בתרגום בענן נשלחים לספק הטקסט שזוהה בעמוד, ההקשר (מילון מונחים ושורות קודמות), ואם בחרת גם תמונות העמודים.
             זה לא עיבוד מקומי: הספק מקבל את התוכן לפי תנאי השימוש שלו. הספרייה עצמה, הקבצים והתרגומים נשמרים רק במחשב.
-            מפתחות API נשמרים ב-Keychain של macOS ולא בקבצי האפליקציה.
+            מפתחות API נשמרים ב{credentialStoreName()} ולא בקבצי האפליקציה.
           </p>
           <label className="check">
             <input type="checkbox" checked={s.cloud_notice_accepted} onChange={(e) => setS({ ...s, cloud_notice_accepted: e.target.checked })} />
@@ -152,7 +152,9 @@ export default function TranslationSettingsPage({ embedded = false }: { embedded
           </Field>
           <Field label="מעבד">
             <select className="select" value={s.ocr.device} onChange={(e) => setS({ ...s, ocr: { ...s.ocr, device: e.target.value } })}>
-              <option value="auto">אוטומטי</option><option value="mps">Apple GPU (MPS)</option><option value="cpu">CPU</option><option value="cuda">NVIDIA (CUDA)</option>
+              <option value="auto">אוטומטי</option>
+              {platform === "mac" ? <option value="mps">Apple GPU (MPS)</option> : <option value="cuda">NVIDIA (CUDA)</option>}
+              <option value="cpu">CPU</option>
             </select>
           </Field>
         </div>
@@ -185,7 +187,7 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
       await api.setApiKey(p.id, key);
       setKey("");
       onKeySaved();
-      toast(key ? "המפתח נשמר ב-Keychain" : "המפתח נמחק", "ok");
+      toast(key ? `המפתח נשמר ב${credentialStoreName()}` : "המפתח נמחק", "ok");
     } catch (e) {
       toastError(e);
     }
@@ -277,7 +279,10 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
 
 function EnginePanel({ status }: { status: ReturnType<typeof useLoad<Awaited<ReturnType<typeof api.engineStatus>>>> }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [gpuChoice, setGpuChoice] = useState<boolean | null>(null);
   const s = status.data;
+  const gpuOffered = !!s?.cuda_build && (s?.gpus.length ?? 0) > 0;
+  const gpu = gpuOffered && (gpuChoice ?? true);
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
     try {
@@ -303,20 +308,31 @@ function EnginePanel({ status }: { status: ReturnType<typeof useLoad<Awaited<Ret
       {s && (
         <div className="col" style={{ gap: 6 }}>
           {row(s.installed, s.installed ? "סביבת Python מותקנת" : "סביבת Python לא מותקנת")}
-          {h && row(!!h.torch, `PyTorch ${h.torch ?? "חסר"}${h.device ? ` · ${h.device}` : ""}`)}
-          {h && row(h.raqm, h.raqm ? "עיצוב טקסט עברי (HarfBuzz + FriBidi) זמין" : "libraqm/fribidi חסר: העברית לא תעומד. התקן: brew install fribidi")}
+          {h && row(!!h.torch, `PyTorch ${h.torch ?? "חסר"}${h.device ? ` · ${h.device}` : ""}${h.gpu ? ` · ${h.gpu}` : ""}`)}
+          {h && gpuOffered && !h.cuda && (
+            <div className="callout small">
+              נמצא כרטיס NVIDIA ({s.gpus[0].replace(/^NVIDIAs+/i, "")}) אבל המנוע רץ על המעבד. התקנה מחדש עם תמיכת GPU תאיץ את הזיהוי והניקוי פי כמה.
+            </div>
+          )}
+          {h && row(h.raqm, h.raqm ? "עיצוב טקסט עברי (HarfBuzz + FriBidi) זמין" : `libraqm/fribidi חסר: העברית לא תעומד. ${platform === "windows" ? "התקינו מחדש את האפליקציה (fribidi-0.dll חסר)" : "התקן: brew install fribidi"}`)}
           {h && row(h.models.detector, "מודל זיהוי בועות")}
           {h && row(h.models.ocr, "מודל OCR ליפנית (manga-ocr)")}
           {h && row(h.models.lama, "מודל ניקוי (LaMa)")}
           {s.error && s.installed && <div className="callout bad small">{s.error}</div>}
+          {gpuOffered && (
+            <label className="check small" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={gpu} onChange={(e) => setGpuChoice(e.target.checked)} />
+              <span>להשתמש בכרטיס המסך NVIDIA ({s.gpus[0].replace(/^NVIDIAs+/i, "")}) — הורדה גדולה יותר (כ-2.5GB), עיבוד מהיר בהרבה</span>
+            </label>
+          )}
           <div className="row wrap" style={{ marginTop: 8 }}>
-            <button className="btn" disabled={!!busy || !s.uv} onClick={() => run("מתקין… (עלול לקחת כמה דקות)", api.installEngine)}>
+            <button className="btn" disabled={!!busy || !s.uv} onClick={() => run("מתקין… (עלול לקחת כמה דקות)", () => api.installEngine(gpu))}>
               {s.installed ? "התקנה מחדש של סביבת Python" : "התקנת סביבת Python"}
             </button>
             <button className="btn" disabled={!!busy || !s.installed || (h?.models.detector && h?.models.ocr && h?.models.lama)} onClick={() => run("מוריד מודלים…", api.prepareModels)}>
               הורדת מודלים חסרים
             </button>
-            {!s.uv && <span className="small" style={{ color: "var(--bad)" }}>נדרש uv להתקנה (brew install uv)</span>}
+            {!s.uv && <span className="small" style={{ color: "var(--bad)" }}>נדרש uv להתקנה ({platform === "windows" ? "winget install astral-sh.uv" : "brew install uv"})</span>}
           </div>
           <span className="small faint ltr" style={{ textAlign: "start" }}>{s.python}</span>
         </div>

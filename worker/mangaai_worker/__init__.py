@@ -8,5 +8,5 @@ the local Hugging Face cache; downloads only happen in `prepare_models`.
 PROTOCOL_VERSION = 1
 # Bump when detection/OCR output changes so cached analyses are invalidated.
 ANALYSIS_VERSION = "a2"
-INPAINT_VERSION = "i2"
+INPAINT_VERSION = "i3"
 RENDER_VERSION = "r1"

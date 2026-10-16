@@ -68,7 +68,7 @@ pub fn is_archive_name(name: &str) -> bool {
 }
 
 fn is_hidden(name: &str) -> bool {
-    name.starts_with('.') || name == "__MACOSX" || name == "Thumbs.db"
+    name.starts_with('.') || name == "__MACOSX" || name.eq_ignore_ascii_case("Thumbs.db") || name.eq_ignore_ascii_case("desktop.ini")
 }
 
 fn is_cover_name(stem: &str) -> bool {

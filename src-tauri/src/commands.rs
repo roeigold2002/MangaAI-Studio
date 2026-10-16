@@ -294,25 +294,57 @@ pub async fn engine_status(st: State<'_, AppState>) -> R<Value> {
         "uv": find_uv(),
         "health": health.as_ref().ok(),
         "error": health.err(),
+        "gpus": crate::platform::nvidia_gpus().await,
+        "cuda_build": cuda_requirements(&cfg.worker_dir).is_some(),
     }))
 }
 
-/// Create/refresh the worker's Python environment with uv (network: PyPI).
+/// Pinned NVIDIA build of PyTorch, Windows only: PyPI's Windows wheel is CPU-only, while
+/// macOS uses MPS and Linux's PyPI wheel already includes CUDA.
+fn cuda_requirements(worker_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let f = worker_dir.join("requirements-cuda-win.txt");
+    (cfg!(all(windows, target_arch = "x86_64")) && f.exists()).then_some(f)
+}
+
+fn tail(out: &std::process::Output) -> String {
+    let log = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    log.chars().rev().take(1500).collect::<String>().chars().rev().collect()
+}
+
+/// Create/refresh the worker's Python environment with uv (network: PyPI; with `gpu`, also
+/// download.pytorch.org). Without `gpu` the environment is exactly the locked CPU one.
 #[tauri::command]
-pub async fn install_engine(st: State<'_, AppState>) -> R<String> {
-    let uv = find_uv().ok_or_else(|| AppError::new("uv_missing", "uv is required: https://docs.astral.sh/uv/ (brew install uv)"))?;
+pub async fn install_engine(st: State<'_, AppState>, gpu: Option<bool>) -> R<String> {
+    let install_hint = if cfg!(windows) { "winget install astral-sh.uv" } else { "brew install uv" };
+    let uv = find_uv().ok_or_else(|| AppError::new("uv_missing", format!("uv is required: https://docs.astral.sh/uv/ ({install_hint})")))?;
     let cfg = st.worker.config().clone();
     let venv = st.paths.root.join("worker-venv");
     st.worker.shutdown().await;
-    let out = tokio::process::Command::new(uv)
+    let out = crate::platform::no_window(&mut tokio::process::Command::new(&uv))
         .args(["sync", "--managed-python", "--python", "3.12", "--no-dev", "--frozen", "--project"])
         .arg(&cfg.worker_dir)
         .env("UV_PROJECT_ENVIRONMENT", &venv)
         .output()
         .await?;
-    let log = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if !out.status.success() {
-        return Err(AppError::new("install_failed", log.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>()));
+        return Err(AppError::new("install_failed", tail(&out)));
+    }
+    if gpu == Some(true) {
+        let req = cuda_requirements(&cfg.worker_dir)
+            .ok_or_else(|| AppError::new("unsupported", "the NVIDIA build is only offered for Windows x64"))?;
+        // Same torch version as the lock, built for CUDA; it bundles the CUDA runtime and has
+        // the same Python dependencies, so only the wheel itself is swapped (hash-checked).
+        let out = crate::platform::no_window(&mut tokio::process::Command::new(&uv))
+            .args(["pip", "install", "--no-deps", "--require-hashes", "--python"])
+            .arg(venv.join("Scripts").join("python.exe"))
+            .arg("-r")
+            .arg(&req)
+            .output()
+            .await?;
+        if !out.status.success() {
+            return Err(AppError::new("install_failed", tail(&out)));
+        }
+        return Ok("installed with NVIDIA GPU support — restart the app to use the new engine".into());
     }
     Ok("installed — restart the app to use the new engine".into())
 }

@@ -1,5 +1,20 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+export type Platform = "mac" | "windows" | "linux";
+export function detectPlatform(ua: string): Platform {
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "mac";
+  return "linux";
+}
+export const platform: Platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.userAgent);
+
+/** Where API keys and passwords are kept on this OS, in the UI's words. */
+export function credentialStoreName(p: Platform = platform): string {
+  if (p === "windows") return "מנהל האישורים של Windows";
+  if (p === "mac") return "ה-Keychain של macOS";
+  return "מאגר הסיסמאות של המערכת";
+}
+
 // Base of the mangaimg:// protocol for this platform (mangaimg://localhost/ on macOS,
 // http://mangaimg.localhost/ on Windows).
 let base: string | null = null;

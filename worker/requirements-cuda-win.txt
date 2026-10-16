@@ -1,0 +1,4 @@
+# NVIDIA GPU build of PyTorch for Windows x64 (CUDA 13.0; Turing through Blackwell GPUs, driver 580+).
+# Installed by the app on top of the locked CPU environment: uv pip install --no-deps --require-hashes -r this file.
+# Same version as uv.lock; the wheel bundles its CUDA runtime, its Python dependencies are identical.
+torch @ https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp312-cp312-win_amd64.whl --hash=sha256:0a09031e93632d14ef49553acd6211ece3ae9cdc0969a369b8c24e3cc4d15be9

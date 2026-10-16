@@ -32,15 +32,16 @@ async fn main() -> anyhow::Result<()> {
     let data_root = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| tmp.path().join("app"));
     let paths = Paths::new(data_root)?;
     let db = Db::open(&paths.db_path())?;
-    let app_data = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(dirs_app_data);
+    let app_data = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(mangaai_lib::platform::default_data_dir);
     let (worker_dir, python) = worker::resolve(&app_data, None);
-    let fonts = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts").canonicalize()?;
+    let fonts = mangaai_lib::platform::canonicalize(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts"))?;
     let vision = Arc::new(PythonWorker::new(WorkerConfig {
         python,
         worker_dir,
         models_dir: app_data.join("models"),
         fonts_dir: fonts,
         log_path: paths.logs_dir().join("worker.log"),
+        native_dir: worker::resolve_native_dir(None),
     }));
     println!("worker health: {}", vision.health().await.map_err(|e| anyhow::anyhow!(e.message))?);
 
@@ -147,9 +148,4 @@ async fn main() -> anyhow::Result<()> {
     println!("original unchanged: yes");
     vision.shutdown().await;
     Ok(())
-}
-
-fn dirs_app_data() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    home.join("Library/Application Support/com.mangaai.studio")
 }

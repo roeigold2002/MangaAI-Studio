@@ -134,9 +134,13 @@ export interface RemoteDetail {
 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;
-  health: { raqm: boolean; torch: string | null; device?: string; python: string;
+  health: { raqm: boolean; torch: string | null; device?: string; cuda?: boolean; gpu?: string; python: string;
     models: { detector: boolean; ocr: boolean; lama: boolean; lama_path: string } } | null;
   error: string | null;
+  /** NVIDIA GPUs reported by the driver (empty on macOS / without one). */
+  gpus: string[];
+  /** This platform offers the pinned NVIDIA build of PyTorch (Windows x64). */
+  cuda_build: boolean;
 }
 
 export interface SearchEntry { source_id: string; source_name: string; lang: string; manga: RemoteManga }

@@ -152,6 +152,76 @@ def test_protocol_roundtrip():
     assert lines[2]["id"] == 3 and lines[2]["ok"]
 
 
+def test_protocol_is_utf8_on_every_platform(tmp_path):
+    """The app writes raw UTF-8 (Hebrew text, Japanese/Hebrew file names). On Windows the
+    worker's default stdin encoding is the ANSI code page, so this must not depend on it."""
+    missing = tmp_path / "תמונה_画像.png"
+    req = json.dumps({"id": 7, "method": "analyze", "params": {"image": str(missing), "ocr": False}}, ensure_ascii=False)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    p = subprocess.run(
+        [sys.executable, "-m", "mangaai_worker"],
+        input=(req + "\n" + '{"id":8,"method":"shutdown"}\n').encode("utf-8"),
+        capture_output=True, cwd=ROOT / "worker", env=dict(env, HF_HUB_OFFLINE="1"), timeout=120,
+    )
+    out = p.stdout.decode("utf-8")
+    assert "\r" not in out, "protocol lines end with \\n only"
+    first = json.loads(out.splitlines()[0])
+    assert first["id"] == 7 and not first["ok"]
+    assert first["error"]["code"] == "file_not_found"
+    assert "תמונה_画像.png" in first["error"]["message"], first["error"]["message"]
+
+
+def test_glyph_clipped_by_the_detector_box_is_erased(tmp_path):
+    """Regression (seen on a real page): the detector box clipped the first glyph of a line and
+    the last glyph of another, and they stayed visible next to the Hebrew. Every letter in a
+    plain bubble that touches the text area, or continues its line, must go."""
+    src = tmp_path / "page.png"
+    im = Image.new("RGB", (600, 360), (120, 90, 60))
+    d = ImageDraw.Draw(im)
+    d.ellipse((40, 30, 560, 330), fill="white", outline="black", width=5)
+    glyphs = []
+    for row, y in enumerate((120, 190)):
+        for i in range(6):
+            x = 150 + i * 50
+            d.rectangle((x, y, x + 34, y + 40), outline="black", width=5)  # a "kanji": a ring of ink
+            d.line((x + 6, y + 20, x + 28, y + 20), fill="black", width=4)
+            glyphs.append((x, y))
+    im.save(src)
+    out = tmp_path / "clean.png"
+    # box misses the first glyph of row 1 entirely and most of the last glyph of row 2
+    box = [205, 118, 412, 232]
+    res = clean(str(src), str(out), [{"rid": "r1", "kind": "bubble", "bbox": box, "bubble": [40, 30, 560, 330]}], "lama")
+    assert res["methods"] == ["fill"]
+    arr = np.array(Image.open(out).convert("L"))
+    for x, y in glyphs:
+        assert arr[y - 2 : y + 43, x - 2 : x + 37].min() > 200, f"glyph at {x},{y} erased"
+    assert arr[180, 42:50].min() < 80, "bubble outline kept"
+    assert arr[10, 10] < 150, "page outside the bubble untouched"
+
+
+def test_letters_near_the_edge_of_a_bubble_cut_by_the_panel_border(tmp_path):
+    """Regression: a bubble cut open by the panel border trips the leak check, which clips the
+    background to an ellipse; letters near the box corners then stayed on the page."""
+    src = tmp_path / "page.png"
+    im = Image.new("RGB", (600, 400), (110, 80, 50))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 0, 600, 40), fill="white")  # gutter above the panel
+    d.rounded_rectangle((80, -60, 520, 230), radius=60, fill="white", outline="black", width=5)
+    d.rectangle((80, 40, 520, 44), fill="white")  # the panel border cuts the bubble open
+    glyphs = [(110, 60), (160, 60), (210, 60), (110, 150), (160, 150)]
+    for x, y in glyphs:
+        d.rectangle((x, y, x + 34, y + 40), outline="black", width=5)
+    im.save(src)
+    out = tmp_path / "clean.png"
+    res = clean(str(src), str(out), [{"rid": "r1", "kind": "bubble", "bbox": [118, 58, 250, 192], "bubble": [80, 40, 520, 230]}], "lama")
+    assert res["methods"] == ["fill"]
+    arr = np.array(Image.open(out).convert("L"))
+    for x, y in glyphs:
+        assert arr[y - 2 : y + 43, x - 2 : x + 37].min() > 200, f"glyph at {x},{y} erased"
+    assert arr[300, 300] < 150, "art below the bubble untouched"
+    assert arr[120, 516:521].max() < 80, "bubble outline kept"
+
+
 def test_tight_text_box_in_round_bubble_on_dark_page(tmp_path):
     """Regression: detector boxes hug the text, so letters touch the box border. The text must
     still be erased, and nothing outside the round bubble (dark art, outline) may be painted."""
