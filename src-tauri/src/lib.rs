@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod catalog;
+pub mod chapter_pick;
 pub mod commands;
 #[cfg(all(target_os = "macos", feature = "dev-snapshot"))]
 mod devsnap;
@@ -7,15 +8,18 @@ pub mod db;
 pub mod downloads;
 pub mod editor;
 pub mod error;
+pub mod follow;
 pub mod jobs;
 pub mod library;
 pub mod pipeline;
+pub mod platform;
 pub mod protocol;
 pub mod providers;
 pub mod runtime;
 pub mod secrets;
 pub mod settings;
 pub mod sources;
+pub mod sync;
 pub mod translate;
 pub mod worker;
 
@@ -70,9 +74,22 @@ fn remote_image(st: &AppState, hex_url: &str) -> protocol::Reply {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        // in-app updates: the UI asks before downloading, installing and restarting
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("mangaimg", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let path = percent_encoding::percent_decode_str(request.uri().path()).decode_utf8_lossy().into_owned();
@@ -105,6 +122,12 @@ pub fn run() {
             Box::leak(Box::new(guard));
             tracing::info!(version = env!("CARGO_PKG_VERSION"), data = %root.display(), "starting");
 
+            // A restore chosen in the previous session replaces the database before it is opened.
+            match sync::apply_pending_restore(&root) {
+                Ok(Some(kept)) => tracing::info!(kept = %kept.display(), "restored a backup"),
+                Ok(None) => {}
+                Err(e) => tracing::error!("backup not restored: {}", e.message),
+            }
             let db = Db::open(&paths.db_path())?;
             let recovered_jobs = jobs::recover(&db)?;
             let recovered_dl = downloads::recover(&db)?;
@@ -112,14 +135,11 @@ pub fn run() {
 
             let resource_dir = app.path().resource_dir().ok();
             let (worker_dir, python) = worker::resolve(&root, resource_dir.as_deref());
-            let fonts_dir = {
-                let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts");
-                if dev.exists() {
-                    dev.canonicalize().unwrap_or(dev)
-                } else {
-                    resource_dir.clone().map(|r| r.join("fonts")).unwrap_or(dev)
-                }
-            };
+            let fonts_dir = platform::dev_path("../resources/fonts")
+                .filter(|d| d.exists())
+                .map(|d| platform::canonicalize(&d).unwrap_or(d))
+                .or_else(|| resource_dir.clone().map(|r| r.join("fonts")))
+                .unwrap_or_else(|| root.join("fonts"));
             let models_dir = root.join("models");
             std::fs::create_dir_all(&models_dir)?;
             let vision = Arc::new(PythonWorker::new(WorkerConfig {
@@ -128,6 +148,7 @@ pub fn run() {
                 models_dir,
                 fonts_dir,
                 log_path: paths.logs_dir().join("worker.log"),
+                native_dir: worker::resolve_native_dir(resource_dir.as_deref()),
             }));
             let events: Arc<dyn EventSink> = Arc::new(TauriEvents(app.handle().clone()));
             let engine = Engine::new(db.clone(), paths.clone(), vision.clone(), events.clone());
@@ -159,16 +180,29 @@ pub fn run() {
             if let Ok(s) = settings::load(&db) {
                 if s.sources.managed && s.sources.suwayomi_enabled && runtime.is_installed() {
                     let (r, url, port) = (runtime.clone(), s.sources.suwayomi_url.clone(), s.sources.managed_port);
+                    let (handle, dl) = (app.handle().clone(), dl_notify.clone());
                     tauri::async_runtime::spawn(async move {
-                        let reachable = match sources::Suwayomi::new(&url, None) {
-                            Ok(sw) => sources::SourceAdapter::ping(&sw).await.is_ok(),
-                            Err(_) => false,
-                        };
-                        if !reachable {
-                            if let Err(e) = r.start(port).await {
-                                tracing::warn!("managed Suwayomi not started: {}", e.message);
-                            }
+                        let Ok(sw) = sources::Suwayomi::new(&url, None) else { return };
+                        if sources::SourceAdapter::ping(&sw).await.is_ok() {
+                            return;
                         }
+                        if let Err(e) = r.start(port).await {
+                            tracing::warn!("managed Suwayomi not started: {}", e.message);
+                            return;
+                        }
+                        // Pages that asked while the server was booting showed it as off.
+                        for _ in 0..90 {
+                            if sources::SourceAdapter::ping(&sw).await.is_ok() {
+                                let _ = handle.emit("sources-changed", serde_json::json!({}));
+                                dl.notify_one();
+                                return;
+                            }
+                            if r.exited().await.is_some() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                        let _ = handle.emit("sources-changed", serde_json::json!({}));
                     });
                 }
             }
@@ -182,6 +216,65 @@ pub fn run() {
                     w.shutdown().await;
                     r.stop().await;
                     handle.exit(0);
+                });
+            }
+            #[cfg(windows)]
+            {
+                // Ctrl+C / closing the console of a dev build: stop children before exiting.
+                let (r, w, handle) = (runtime.clone(), vision.clone(), app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::windows::{ctrl_c, ctrl_close};
+                    let (Ok(mut c), Ok(mut close)) = (ctrl_c(), ctrl_close()) else { return };
+                    tokio::select! { _ = c.recv() => {}, _ = close.recv() => {} }
+                    w.shutdown().await;
+                    r.stop().await;
+                    handle.exit(0);
+                });
+            }
+            // New chapters of online series: first look a few minutes after launch, then every N hours.
+            {
+                let (db, secrets, dl, handle) = (db.clone(), secrets.clone(), dl_notify.clone(), app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    loop {
+                        let Ok(s) = settings::load(&db) else { return };
+                        let hours = s.sources.check_new_chapters_hours;
+                        if hours > 0 && s.sources.suwayomi_enabled {
+                            match commands::make_adapter(&db, secrets.as_ref()) {
+                                Ok(adapter) => match follow::check(&db, adapter, s.sources.auto_download_new).await {
+                                    Ok(report) => {
+                                        tracing::info!(checked = report.checked, new = report.new.len(), "new chapter check");
+                                        commands::announce_new_chapters(&handle, &report);
+                                        if s.sources.auto_download_new && !report.new.is_empty() {
+                                            dl.notify_one();
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!("new chapter check failed: {}", e.message),
+                                },
+                                Err(e) => tracing::warn!("new chapter check skipped: {}", e.message),
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600 * hours.max(1) as u64)).await;
+                    }
+                });
+            }
+            // Sync with the shared folder shortly after launch and every 15 minutes (when one is set).
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    loop {
+                        let set = settings::load(&db).map(|s| !s.sync.folder.trim().is_empty()).unwrap_or(false);
+                        if set {
+                            let d = db.clone();
+                            match tauri::async_runtime::spawn_blocking(move || commands::run_sync(&d)).await {
+                                Ok(Ok(r)) => tracing::info!(updated = r.chapters_updated, added = r.series_added.len(), "synced"),
+                                Ok(Err(e)) => tracing::warn!("sync failed: {}", e.message),
+                                Err(_) => {}
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                    }
                 });
             }
             let search_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -205,6 +298,12 @@ pub fn run() {
             // Quit from the menu / Cmd+Q / last window: stop the worker and the managed server.
             if let tauri::RunEvent::Exit = event {
                 if let Some(st) = app.try_state::<AppState>() {
+                    // last sync so the other computer sees where reading stopped
+                    if settings::load(&st.db).map(|s| !s.sync.folder.trim().is_empty()).unwrap_or(false) {
+                        if let Err(e) = commands::run_sync(&st.db) {
+                            tracing::warn!("sync on exit failed: {}", e.message);
+                        }
+                    }
                     let (w, r) = (st.worker.clone(), st.runtime.clone());
                     tauri::async_runtime::block_on(async move {
                         w.shutdown().await;
@@ -272,6 +371,9 @@ macro_rules! app_handlers {
             commands::browse_source,
             commands::remote_manga,
             commands::enqueue_downloads,
+            commands::plan_downloads,
+            commands::duplicate_cleanup_plan,
+            commands::clean_up_duplicates,
             commands::list_downloads,
             commands::download_action,
             commands::clear_finished_downloads,
@@ -291,6 +393,13 @@ macro_rules! app_handlers {
             commands::list_stores,
             commands::add_store,
             commands::validate_store_url,
+            commands::apply_source_defaults,
+            commands::check_new_chapters,
+            commands::setup_needs,
+            commands::setup_everything,
+            commands::sync_now,
+            commands::create_backup,
+            commands::restore_backup,
             commands::remove_store,
             commands::list_extensions,
             commands::change_extension,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Search as SearchIcon, X } from "lucide-react";
 import { api, errCode, errMessage } from "../lib/api";
-import { useLoad } from "../lib/store";
+import { useEvent, useLoad } from "../lib/store";
 import { langName, remoteUrl } from "../lib/util";
 import { useApp } from "../lib/store";
 import { Empty, Spinner } from "../components/ui";
@@ -18,6 +18,7 @@ export default function SearchPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ code: string | null; message: string } | null>(null);
   const overview = useLoad(() => api.sourceOverview(), []);
+  useEvent("sources-changed", overview.reload);
   const state = sourceState(overview.data);
   const canSearch = state === "ready" || state === "local_only";
   const inputRef = useRef<HTMLInputElement>(null);

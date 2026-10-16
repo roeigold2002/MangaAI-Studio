@@ -1,19 +1,21 @@
 # MangaAI Studio
 
 A personal desktop manga reader with AI translation into Hebrew. Local-first, single user,
-no account, no telemetry. macOS (Apple Silicon) is the tested platform. The stack (Tauri 2 +
-React, Rust core, Python worker) also targets Windows and Linux, but those builds are untested.
+no account, no telemetry. Runs natively on macOS (Apple Silicon) and Windows 10/11 x64; both are tested
+end to end (import, OCR, translation, Hebrew typesetting, managed Suwayomi). The stack is Tauri 2 +
+React, a Rust core and a Python worker; Linux builds and tests pass but the window is untested there.
 
 - **Library**: import image folders, CBZ and ZIP (originals are never modified), natural page
   order (`2.jpg` < `10.jpg`), rescan for new chapters, categories, favorites, read state, history.
 - **Reader**: single page, two-page spread, vertical scroll. RTL/LTR page direction per manga. Fit
   to screen or width, zoom, full screen, page thumbnails, preloading, remembered position, original/translated
   toggle, side-by-side compare, keyboard and mouse navigation. Works offline.
-- **Translation**: bubble detection → Japanese OCR → context-aware translation (glossary,
+- **Translation**: bubble detection → OCR (Japanese: manga-ocr; English: TrOCR) → context-aware translation (glossary,
   translation memory, previous lines, optional page images) → text removal (LaMa) → Hebrew
   typesetting with HarfBuzz/FriBidi. Results are cached on disk; reopening a translated page costs nothing.
 - **Providers**: Claude Code CLI (your Claude login, no API key), Anthropic API, OpenAI, Gemini,
-  Ollama (local), any OpenAI-compatible server. API keys go in the macOS Keychain.
+  Ollama (local), any OpenAI-compatible server. API keys go in the OS credential store
+  (macOS Keychain / Windows Credential Manager).
 - **Editor**: fix OCR text, edit and approve translations (stored in translation memory and never
   overwritten), font size/alignment/position, add or delete regions, change reading order,
   re-run OCR or translation for one region, restore the original, compare with the previous render.
@@ -38,6 +40,54 @@ upstream review: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md) · l
 
 Reading and importing need none of the AI parts.
 
+### Windows
+
+| | Needed for | Install |
+|---|---|---|
+| Node 20+ and npm | building the UI | `winget install OpenJS.NodeJS` |
+| Rust (stable, MSVC) | building the app | `winget install Rustlang.Rustup` |
+| Visual Studio 2022+ or Build Tools with "Desktop development with C++" | Rust linker, FriBiDi | `winget install Microsoft.VisualStudio.2022.BuildTools` |
+| uv | the AI engine's Python environment, building FriBiDi | `winget install astral-sh.uv` |
+| WebView2 runtime | the window | preinstalled on Windows 11; the installer fetches it otherwise |
+
+**For users, one installer is all there is.** The about-18 MB installer ships the app, `fribidi-0.dll`
+(Hebrew shaping; Pillow's Windows wheels leave it out) and a pinned `uv.exe` (0.12.10, SHA-256 checked, which builds
+the AI engine). On first launch, **Home → הכנה בלחיצה אחת** does the rest in one click with live progress:
+1. **AI engine:** installed with the NVIDIA build automatically when an NVIDIA card is found.
+2. **Models:** detection, Japanese and English OCR, LaMa.
+3. **Sources server:** with Keiyoushi, MangaDex and MangaFire.
+
+Steps that are already done are skipped, a failed step can be retried with the same button, and nothing needs a
+restart. Nothing is installed system-wide.
+
+For developers, `npm run app:dev` and `npm run app:build` fetch both once (`scripts/build-fribidi.ps1`: MSVC, static
+CRT, checksum-verified; `scripts/fetch-uv.ps1`: checksum-verified). Release builds never fall back to paths inside the
+source checkout, even on the computer that built them.
+
+**Code signing (Windows):** everything is ready except the certificate itself, which has to be bought.
+- **Options:**
+  - **Azure Trusted Signing** (about $10/month; the cheapest; a SmartScreen reputation builds quickly).
+  - An **OV** certificate from a certificate authority (about $200–400/year; SmartScreen warnings fade as downloads accumulate).
+  - An **EV** certificate (more expensive; trusted by SmartScreen right away).
+- **Local signed build:**
+  1. Set `MANGAAI_SIGN_PFX` and `MANGAAI_SIGN_PFX_PASSWORD` (or the Azure variables listed in `scripts/sign-windows.ps1`).
+  2. Run `.\scriptsuild-signed.ps1`. It signs the app, the bundled DLLs, the NSIS plugins, the uninstaller and the
+     installer, adds an RFC 3161 timestamp, and finally prints the installer's Authenticode status.
+- **Releases:** add the repository secrets `WINDOWS_CERTIFICATE` (the .pfx as base64) and `WINDOWS_CERTIFICATE_PASSWORD`, or
+  `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` plus the variables `TRUSTED_SIGNING_ENDPOINT`,
+  `TRUSTED_SIGNING_ACCOUNT` and `TRUSTED_SIGNING_PROFILE`. `release.yml` then signs automatically; without them it builds
+  unsigned as before.
+- **Ordinary builds:** `npm run app:build` never signs and needs no Windows SDK. The signing settings live in
+  `src-tauri/tauri.signing.conf.json`, which is applied only for a signed build.
+- **Verified:** with a self-signed test certificate (kept as a file; nothing was added to the Windows certificate store),
+  the installed app, DLL and uninstaller all carried the signature and a DigiCert timestamp.
+
+**NVIDIA GPU (optional, Windows):** PyPI's Windows PyTorch is CPU-only. With an NVIDIA card, Translation
+settings → AI engine offers "use the NVIDIA GPU": the locked environment is installed as usual, then torch
+is swapped for the same version built for CUDA 13.0 (hash-pinned in `worker/requirements-cuda-win.txt`;
+Turing through Blackwell GPUs, driver 580+). Measured on an RTX 5080: detection + OCR 3.5× and LaMa text
+removal about 9× faster than the CPU build. Unticking it and reinstalling returns to the exact CPU lock.
+
 ## Build and run
 
 ```bash
@@ -48,7 +98,8 @@ npm install
 npm run app:dev
 ```
 
-Release build (creates `src-tauri/target/release/bundle/macos/MangaAI Studio.app` and a `.dmg`):
+Release build (macOS: `src-tauri/target/release/bundle/macos/MangaAI Studio.app` and a `.dmg`;
+Windows: `src-tauri/target/release/bundle/nsis/MangaAI Studio_<version>_x64-setup.exe`, a per-user installer):
 
 ```bash
 npm run app:build
@@ -56,6 +107,41 @@ npm run app:build
 
 The bundle is ad-hoc signed (no Apple Developer ID, so not notarized). If macOS blocks the first
 launch, right-click the app → Open.
+
+## Releases and updates
+
+Installed apps check `latest.json` on the newest published GitHub release once a day at startup, and
+on request from Settings → Data → About → "check for updates". A newer version opens a prompt with its
+version and release notes; nothing is downloaded until the user picks "install and restart". Queued
+downloads and translations continue after the restart. Updates are signed with the updater key; the
+public half is in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`), and the app rejects files
+not signed with the matching private key.
+
+To release a version:
+
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`
+   (`npm install` and `cargo check` refresh the lock files), commit, and push.
+2. Tag it with the release notes as the tag message. The notes are what the update prompt shows:
+
+   ```bash
+   git tag -a v0.2.0 -m "מה חדש בגרסה הזו"
+   ```
+
+   ```bash
+   git push origin v0.2.0
+   ```
+
+3. The Release workflow (`.github/workflows/release.yml`) fails fast if the tag and the version
+   differ, then builds the Windows installer and the macOS app and `.dmg`, signs the updater bundles, and
+   attaches everything plus `latest.json` to a **draft** release (about 20 minutes).
+4. Try the installer from the draft, then publish it. Apps see the update only once it is published.
+   Editing the release text on GitHub does not change the notes in `latest.json`.
+
+The workflow needs two repository secrets (Settings → Secrets and variables → Actions):
+`TAURI_SIGNING_PRIVATE_KEY` (the contents of the private key file) and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep the key file and its password backed up outside the repo:
+without them, installed copies can no longer be updated and need a manual reinstall. Local
+`npm run app:build` builds do not create updater files and need no key.
 
 ## AI engine setup (once)
 
@@ -65,7 +151,14 @@ Either in the app (**Translation settings → AI engine → Install**, then **Do
 ./scripts/setup-worker.sh
 ```
 
-This creates `~/Library/Application Support/com.mangaai.studio/worker-venv` from the locked
+On Windows (PowerShell):
+
+```powershell
+.\scripts\setup-worker.ps1
+```
+
+This creates `~/Library/Application Support/com.mangaai.studio/worker-venv` (Windows:
+`%APPDATA%\com.mangaai.studio\worker-venv`) from the locked
 `worker/uv.lock` and downloads three models (detector and OCR from Hugging Face, LaMa from
 GitHub). After that the engine runs offline: the worker is started with `HF_HUB_OFFLINE=1`.
 
@@ -87,7 +180,8 @@ Open **Translation settings**, pick a provider, and press **Test connection**.
 
 Before the first cloud translation you must accept the privacy notice. It explains that page text,
 and page images if enabled, are sent to the provider. **Local-only mode** blocks every cloud
-provider. Keys are stored in the macOS Keychain under the service `com.mangaai.studio`.
+provider. Keys are stored in the macOS Keychain / Windows Credential Manager under the service
+`com.mangaai.studio`.
 
 ## Discover → download → library → translate → read
 
@@ -114,15 +208,29 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
   with its own data folder. The app starts it with every launch and stops it on quit.
 - **You already run Suwayomi** → Settings → מקורות ותוספים: enter its address (a *server* URL, not a store URL).
   A server the app did not install is never started, stopped or modified.
-- **Sources come from extension stores.** On setup the app registers the official Suwayomi store. It was
-  verified in October 2026 to contain one extension, "Suwayomi", which connects to another Suwayomi server
-  and provides no manga websites. Other stores are published by third parties. The app does not add them on
-  its own and installs no extension without an explicit click. Add a store and install extensions under
-  **Settings → מקורות ותוספים (מתקדם)**.
+- **Sources come from extension stores.** On setup the app registers two stores:
+  - the official Suwayomi store. Its only extension, "Suwayomi", connects to another Suwayomi server and
+    provides no manga websites.
+  - the **Keiyoushi** community store (`keiyoushi/extensions`, registered through its `repo.json`). It had
+    1,425 extensions in October 2026, 139 of them Japanese, including publisher sites such as BookWalker and Comic Action.
+    Its old `index.min.json` is now only an "Outdated App" stub; Suwayomi follows `repo.json` to the current `index.pb`.
+
+  Setup then installs the **default extensions**, MangaDex and MangaFire from Keiyoushi, and searches their
+  **English** sources (`sources.languages` defaults to `["en"]`). A new install can search and download right
+  away with nothing to configure. Both lists are settings: `sources.default_extensions` (package names) and
+  `sources.languages`. No other extension is installed without a click. For a server set up earlier,
+  **Settings → מקורות ותוספים (מתקדם) → השלמת ברירות המחדל** adds whatever is missing. Stores can also be added
+  or removed there.
 - Suwayomi 2.x replaced the old `extensionRepos` setting with **Extension Stores**
   (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
   removed; Suwayomi has no "disable" operation.
 - Some sources need settings (server address, login…): Settings → מקורות ותוספים → מקורות מותקנים → הגדרות המקור.
+- **New chapters:** two minutes after launch and then every 12 hours (`sources.check_new_chapters_hours`, 0 = off), the
+  app asks each online series' source for chapters the library has never seen in any version. New chapters are queued
+  one version each, using the same rules as "download all" (`sources.auto_download_new`; off = notify only). A Windows
+  notification and an in-app message name them. Chapters that failed before are not retried behind your back.
+  **הספרייה שלי → בדיקת פרקים חדשים** checks right away. A live check against your own server, on a database copy:
+  `cargo run --example check_new -- <copy of library.db> http://127.0.0.1:4567`.
 - The managed server's **Local source** reads `…/suwayomi/data/local/<Title>/<Chapter>.cbz`. Files placed there
   show up in search too.
 
@@ -139,7 +247,8 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
 
 ## Where things are stored
 
-`~/Library/Application Support/com.mangaai.studio/` (override with `MANGAAI_DATA_DIR`):
+`~/Library/Application Support/com.mangaai.studio/` on macOS, `%APPDATA%\com.mangaai.studio\` on Windows
+(override with `MANGAAI_DATA_DIR`):
 
 ```
 library.db        SQLite: library, progress, OCR, translations, glossary, memory, jobs
@@ -154,7 +263,27 @@ logs/             app.log, worker.log (no API keys)
 **Settings → Data** shows the sizes, opens the folder, clears thumbnails and exports everything
 (minus images and secrets) to JSON.
 
+### Backup and sync between computers
+
+**Settings → Data → גיבוי וסנכרון.**
+- **Sync:** choose a folder both computers can reach (OneDrive, Dropbox, Google Drive or a network share). Each sync merges
+  the folder's `mangaai-sync.json` into the library ("newer wins" per item), then writes the merged state back, so
+  computers converge. Syncs run 30 s after launch, every 15 minutes, on exit and on demand.
+  - **What syncs:** reading progress, read marks, favorites, categories, the glossary, translation memory, and the list
+    of online series.
+  - **How items are matched:** a series by its source and reference (local imports by title), a chapter by its number
+    or title. Read marks, categories, glossary entries and memory are never deleted by a sync.
+  - **What doesn't travel:** pages and translations. An online series that exists only on the other computer is added
+    to the library, and the new-chapter check then downloads it. Local imports can't travel, since their files are
+    on the other computer.
+- **Backup:** a ZIP with a consistent copy of the database (`VACUUM INTO`) and the readable sync state, optionally with
+  the downloaded chapters. API keys are never included. **Restore** checks the file and extracts missing chapter files;
+  the database is swapped in on the next start, and the previous one is kept as `library.db.before-restore-<time>`.
+
 ## Tests
+
+GitHub Actions (`.github/workflows/ci.yml`) runs these three suites and the TypeScript check on Windows and macOS (Apple Silicon)
+for every pull request and every push to `main`.
 
 ```bash
 cd src-tauri && cargo test
@@ -163,6 +292,8 @@ cd src-tauri && cargo test
 ```bash
 cd worker && DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib uv run --managed-python pytest -q
 ```
+
+On Windows run it without the variable; the tests load `src-tauri\windows\native\fribidi-0.dll`.
 
 ```bash
 npm test
@@ -187,19 +318,33 @@ with "retry failed pages". The live Suwayomi check (needs a running server):
 cd src-tauri && cargo run --example suwayomi_live -- http://127.0.0.1:4567 local
 ```
 
+The managed Suwayomi install itself (download, checksum, start, GraphQL, stop):
+
+```bash
+cd src-tauri && cargo run --example suwayomi_managed
+```
+
 (Create the CBZ first: `cd tests/fixtures/pepper_ep06_ja && zip -0 ../generated/pepper_ep06_ja.cbz *.jpg`.)
 
 ## Known limitations
 
-- OCR is Japanese only (manga-ocr). Korean, Chinese and English need another OCR engine behind
-  the same worker interface. The language selector marks them unavailable.
+- Local OCR covers Japanese (manga-ocr) and English (TrOCR `microsoft/trocr-base-printed`, about 1.3 GB, downloaded
+  with "download missing models"). English OCR reads lettered dialogue well and gives low confidence on sound effects
+  and art; small slips ("ABIT") are left for the translator and the editor. Korean and Chinese pages are read from the
+  page image by the translator, which needs a provider with image input.
+  Measured with Claude Haiku via the CLI, English OCR translates in about the same time and cost as reading from the
+  image (22-32 s, about $0.027 per page). Its gains are text you can edit and re-OCR in the editor, and English
+  translation with text-only providers such as Ollama, fully offline.
 - RAR/CBR archives are not read. Extract them first; the import reports skipped RAR files.
 - Reading order inside a page uses a row heuristic. Complex layouts may need reordering in the editor.
 - Text removal on detailed artwork can leave traces. These pages are flagged "complex background" in the editor.
 - Cost estimates are approximate. Actual reported usage is recorded per provider in the queue.
-- No manga website source ships with the app or the official store. Online manga sites need a third-party
-  extension store chosen by the user. The live tests used the official store's "Suwayomi" extension and
-  the server's Local source.
+- No manga website source ships with the app. Website extensions come from the Keiyoushi store (or another
+  store the user adds) and are installed only on request. The live tests used the official store's "Suwayomi"
+  extension, the server's Local source, and registration of both default stores
+  (`cargo run --example suwayomi_managed`, which also installs the default extensions and lists the English sources).
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
-  was not run there. Windows: the app and its test binaries cross-compile and link for x86_64 Windows (MinGW), but
-  were not run (no Windows machine available).
+  was not run there.
+- Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. Until a code-signing
+  certificate is configured (see "Code signing (Windows)"), the installer is unsigned and SmartScreen may ask for
+  confirmation on first run ("More info" → "Run anyway").

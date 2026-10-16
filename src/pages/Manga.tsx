@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Check, Heart, Languages, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Check, CopyX, Heart, Languages, Play, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast, toastError, useEvent, useLoad, useThrottled } from "../lib/store";
-import { chapterTranslationBadge, publicationStatus, shortTitles } from "../lib/util";
-import { Cover, Empty, ErrorBox, Field, Modal } from "../components/ui";
+import { bytes, chapterTranslationBadge, publicationStatus, shortTitles } from "../lib/util";
+import { Cover, Empty, ErrorBox, Field, Modal, Spinner } from "../components/ui";
 import { TranslateFlow } from "../components/TranslateFlow";
-import type { ChapterInfo, GlossaryEntry, MangaDetail } from "../lib/types";
+import type { ChapterInfo, CleanupPlan, GlossaryEntry, MangaDetail } from "../lib/types";
 
 export default function MangaPage() {
   const id = Number(useParams().id);
@@ -16,6 +16,7 @@ export default function MangaPage() {
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [translate, setTranslate] = useState<number[] | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
+  const [cleanup, setCleanup] = useState(false);
   const refresh = useThrottled(reload, 1000);
   useEvent<{ chapter_id: number }>("page-updated", (p) => {
     if (m?.chapters.some((c) => c.id === p.chapter_id)) refresh();
@@ -82,6 +83,9 @@ export default function MangaPage() {
               <Heart size={16} fill={m.favorite ? "currentColor" : "none"} /> {m.favorite ? "במועדפים" : "הוסף למועדפים"}
             </button>
             {m.import_root && <button className="btn ghost" onClick={rescan}><RefreshCw size={16} /> סריקה מחדש</button>}
+            {m.source_kind === "source" && (
+              <button className="btn ghost" onClick={() => setCleanup(true)}><CopyX size={16} /> ניקוי פרקים כפולים</button>
+            )}
           </div>
         </div>
       </div>
@@ -104,7 +108,76 @@ export default function MangaPage() {
 
       {translate && <TranslateFlow chapters={m.chapters} preselect={translate} onClose={() => { setTranslate(null); setSel(new Set()); }} />}
       {flowOpen && <TranslateFlow chapters={m.chapters} onClose={() => setFlowOpen(false)} />}
+      {cleanup && <DuplicateCleanup mangaId={m.id} onClose={() => setCleanup(false)} onDone={reload} />}
     </div>
+  );
+}
+
+/** Remove extra versions of the same chapter (and one-page placeholders), after showing exactly what goes. */
+function DuplicateCleanup({ mangaId, onClose, onDone }: { mangaId: number; onClose: () => void; onDone: () => void }) {
+  const [placeholders, setPlaceholders] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const { data: plan, error, loading } = useLoad(() => api.duplicateCleanupPlan(mangaId, placeholders), [mangaId, placeholders]);
+
+  async function apply(p: CleanupPlan) {
+    setBusy(true);
+    try {
+      const chapterIds = p.remove.flatMap((e) => (e.chapter_id != null ? [e.chapter_id] : []));
+      const downloadIds = p.remove.flatMap((e) => (e.download_id != null ? [e.download_id] : []));
+      const r = await api.cleanUpDuplicates(mangaId, placeholders, chapterIds, downloadIds);
+      const parts = [`${r.chapters_removed} פרקים הוסרו (${bytes(r.bytes_freed)} התפנו)`];
+      if (r.downloads_cancelled) parts.push(`${r.downloads_cancelled} הורדות כפולות בוטלו`);
+      toast(parts.join(" · "), "ok");
+      onDone();
+      onClose();
+    } catch (e) {
+      toastError(e);
+      setBusy(false);
+    }
+  }
+
+  const n = plan?.remove.length ?? 0;
+  return (
+    <Modal title={plan && n ? `להסיר ${n} פרקים כפולים?` : "ניקוי פרקים כפולים"} onClose={onClose}
+      actions={<>
+        <button className="btn ghost" onClick={onClose}>{plan && !n ? "סגירה" : "ביטול"}</button>
+        {plan && n > 0 && (
+          <button className="btn danger" disabled={busy || loading} onClick={() => apply(plan)}>
+            {busy ? <Spinner label="מוחק…" /> : <><Trash2 size={14} /> מחיקה</>}
+          </button>
+        )}
+      </>}>
+      {error && <ErrorBox error={error} />}
+      {!plan && !error && <Spinner label="מחפש כפילויות…" />}
+      {plan && (
+        <>
+          <p className="muted">
+            {n
+              ? <>נשאר עותק אחד לכל פרק ({plan.kept} פרקים נשארים{plan.preferred ? <>, עדיפות לקבוצה <b dir="auto">{plan.preferred}</b></> : ""}).
+                  {" "}העותקים הכפולים יימחקו מהספרייה ומהדיסק{plan.bytes ? ` (${bytes(plan.bytes)})` : ""}. פרקים שייבאת בעצמך ופרקים עם תרגום לא נמחקים.</>
+              : "לא נמצאו פרקים כפולים להסרה."}
+          </p>
+          <label className="check">
+            <input type="checkbox" checked={placeholders} onChange={(e) => setPlaceholders(e.target.checked)} />
+            <span className="small">להסיר גם פרקים של עמוד אחד שרק מפנים לאתר המו״ל</span>
+          </label>
+          {n > 0 && (
+            <div className="panel" style={{ padding: 0, maxHeight: 280, overflow: "auto" }}>
+              {plan.remove.map((e) => (
+                <div key={`${e.chapter_id}-${e.download_id}`} className="list-row small">
+                  <span className="grow" dir="auto">{e.title}</span>
+                  {e.scanlator && <span className="faint" dir="auto">{e.scanlator}</span>}
+                  {e.pages != null && <span className="faint">{e.pages} עמ׳</span>}
+                  <span className="badge">
+                    {e.chapter_id == null ? "יבוטל מתור ההורדות" : e.reason === "placeholder" ? "עמוד מפנה" : "עותק נוסף"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -323,9 +396,9 @@ function Options({ m, onSaved }: { m: MangaDetail; onSaved: () => void }) {
         <Field label="שפת המקור">
           <select className="select" value={form.source_lang} onChange={(e) => setForm({ ...form, source_lang: e.target.value })}>
             <option value="ja">יפנית</option>
-            <option value="ko" disabled>קוריאנית (OCR עדיין לא נתמך)</option>
-            <option value="zh" disabled>סינית (OCR עדיין לא נתמך)</option>
-            <option value="en" disabled>אנגלית (OCR עדיין לא נתמך)</option>
+            <option value="en">אנגלית</option>
+            <option value="ko">קוריאנית (המתרגם קורא מהתמונה)</option>
+            <option value="zh">סינית (המתרגם קורא מהתמונה)</option>
           </select>
         </Field>
       </div>

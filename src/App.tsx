@@ -5,6 +5,9 @@ import { BookMarked, Download, Home, ListChecks, Search, Settings as Cog } from 
 import { toast, useApp, useEvent } from "./lib/store";
 import { api } from "./lib/api";
 import { Toasts } from "./components/ui";
+import { UpdatePrompt } from "./components/UpdatePrompt";
+import type { CheckReport } from "./lib/types";
+import { checkOnStartup } from "./lib/updates";
 import HomePage from "./pages/Home";
 import LibraryPage from "./pages/Library";
 import MangaPage from "./pages/Manga";
@@ -38,6 +41,12 @@ function Sidebar() {
     // completion indicator wherever the user is
     if (d.status === "done") toast(`הורד: ${d.manga_title} · ${d.chapter_title}. נמצא ב"הספרייה שלי".`, "ok");
     if (d.status === "failed") toast(`ההורדה נכשלה: ${d.chapter_title} (${d.error ?? ""})`, "bad");
+  });
+  useEvent<CheckReport>("new-chapters", (r) => {
+    for (const n of r.new) {
+      const what = n.chapters.length === 1 ? n.chapters[0] : `${n.chapters.length} פרקים חדשים`;
+      toast(`${n.title}: ${what}${n.queued ? " (בהורדה)" : ""}`, "ok");
+    }
   });
   useEvent<{ status: string; manga_title: string; chapter_title: string; failed: number }>("job-updated", (j) => {
     if (j.status === "done") toast(`התרגום הסתיים: ${j.manga_title} · ${j.chapter_title}`, "ok");
@@ -166,6 +175,8 @@ export default function App() {
   useEffect(() => {
     loadSettings().catch((e) => setError(String(e?.message ?? e)));
     invoke<string | null>("dev_start_route").then((r) => { if (r) devStart(r); }).catch(() => {});
+    // `npm run app:dev` builds are not installed, so there is nothing to update
+    if (!import.meta.env.DEV) checkOnStartup();
   }, [loadSettings]);
   if (error) {
     return (
@@ -179,6 +190,7 @@ export default function App() {
   return (
     <HashRouter>
       <Layout />
+      <UpdatePrompt />
       <Toasts />
     </HashRouter>
   );

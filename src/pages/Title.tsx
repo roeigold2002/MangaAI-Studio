@@ -3,9 +3,18 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, BookOpen, Download, Library, Play } from "lucide-react";
 import { api } from "../lib/api";
 import { toast, toastError, useEvent, useLoad, useThrottled } from "../lib/store";
-import { bytes, langName, publicationStatus, remoteUrl } from "../lib/util";
+import { bytes, chaptersInRange, chapterStats, langName, publicationStatus, remoteUrl } from "../lib/util";
 import { ErrorBox, Modal, Spinner } from "../components/ui";
-import type { RemoteChapter, SearchGroup } from "../lib/types";
+import type { DownloadPlan, RemoteChapter, SearchGroup } from "../lib/types";
+
+/** What a bulk download left out: "114 גרסאות כפולות דולגו · …" */
+function planText(p: DownloadPlan): string {
+  const parts = [];
+  if (p.duplicates) parts.push(`${p.duplicates} גרסאות כפולות דולגו`);
+  if (p.placeholders) parts.push(`${p.placeholders} פרקים של עמוד אחד שמפנה לאתר המו״ל דולגו`);
+  if (p.already) parts.push(`${p.already} כבר בספרייה או בהורדה`);
+  return parts.join(" · ");
+}
 
 /** Details of a search result: chapters, download status, and the download actions. */
 export default function TitlePage() {
@@ -17,7 +26,9 @@ export default function TitlePage() {
   const hint = useLoad(() => api.downloadSizeHint(), []);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [range, setRange] = useState({ from: "", to: "" });
-  const [confirm, setConfirm] = useState<RemoteChapter[] | null>(null);
+  const [confirm, setConfirm] = useState<{ list: RemoteChapter[]; plan: DownloadPlan } | null>(null);
+  /** Preferred scanlation group: undefined = as stored for this manga, null = automatic. */
+  const [pref, setPref] = useState<string | null | undefined>(undefined);
   const [waitingFor, setWaitingFor] = useState<number | null>(null);
   const refresh = useThrottled(() => { reload(); local.reload(); }, 600);
 
@@ -34,14 +45,21 @@ export default function TitlePage() {
   });
 
   const chapters = data?.chapters ?? [];
-  const pending = useMemo(() => chapters.filter((c) => data?.downloads[c.chapter_ref] !== "done"), [chapters, data]);
+  const stats = useMemo(() => chapterStats(chapters, data?.downloads ?? {}), [chapters, data]);
+  const preferred = pref === undefined ? data?.preferred_scanlator ?? null : pref;
   const m = data?.manga ?? group?.entries[0].manga;
 
-  async function download(list: RemoteChapter[]) {
+  /** `bestOnly`: download all / a range, one version per chapter; otherwise exactly the chosen chapters. */
+  async function download(list: RemoteChapter[], bestOnly = false) {
     if (!data || !list.length) return;
     try {
-      const r = await api.enqueueDownloads(data.manga, list);
-      toast(r.added ? `${r.added} פרקים נכנסו להורדה. הם יופיעו ב"הספרייה שלי" כשיסתיימו.` : "הפרקים האלה כבר הורדו או בהורדה", "ok");
+      const r = await api.enqueueDownloads(data.manga, list, { bestOnly, preferred });
+      const summary = r.plan ? planText(r.plan) : "";
+      toast(
+        (r.added ? `${r.added} פרקים נכנסו להורדה. הם יופיעו ב"הספרייה שלי" כשיסתיימו.` : "הפרקים האלה כבר הורדו או בהורדה") +
+          (summary ? ` (${summary})` : ""),
+        "ok",
+      );
       setSel(new Set());
       reload();
     } catch (e) {
@@ -49,9 +67,17 @@ export default function TitlePage() {
     }
   }
 
-  function askAll(list: RemoteChapter[]) {
-    if (list.length > 20) setConfirm(list);
-    else download(list);
+  /** Download all / a range: one version per chapter, without one-page placeholders. */
+  async function askAll(list: RemoteChapter[]) {
+    if (!data || !list.length) return;
+    try {
+      const plan = await api.planDownloads(data.manga, list, preferred);
+      if (!plan.chapters) return toast(`אין פרקים חדשים להורדה. ${planText(plan)}`, "ok");
+      if (plan.chapters > 20) setConfirm({ list, plan });
+      else download(list, true);
+    } catch (e) {
+      toastError(e);
+    }
   }
 
   async function readNow() {
@@ -69,12 +95,11 @@ export default function TitlePage() {
 
   function downloadRange() {
     const from = Number(range.from), to = Number(range.to);
-    if (!from || !to || from > to) return toast("בחר טווח תקין: מפרק מספר … עד פרק מספר …", "bad");
-    const list = chapters.slice(from - 1, to).filter((c) => data?.downloads[c.chapter_ref] !== "done");
-    askAll(list);
+    if (range.from === "" || range.to === "" || Number.isNaN(from) || Number.isNaN(to) || from > to) return toast("בחר טווח תקין: מפרק מספר … עד פרק מספר …", "bad");
+    askAll(chaptersInRange(chapters, from, to));
   }
 
-  const doneCount = chapters.length - pending.length;
+  const doneCount = stats.distinct - stats.missing;
   const localManga = local.data;
   const translatedPages = localManga?.chapters.reduce((s, c) => s + c.translation.done, 0) ?? 0;
 
@@ -114,7 +139,12 @@ export default function TitlePage() {
             <div className="meta-line">
               {m.author && <span dir="auto">{m.author}</span>}
               {publicationStatus(m.status) && <span>{publicationStatus(m.status)}</span>}
-              {data && <span>{chapters.length} פרקים</span>}
+              {data && <span>{stats.distinct} פרקים</span>}
+              {data && stats.versions > stats.distinct && (
+                <span title="המקור מציג כמה גרסאות לאותו פרק (קבוצות תרגום שונות). בהורדת כל הפרקים יורדת גרסה אחת לכל פרק.">
+                  {stats.versions} גרסאות
+                </span>
+              )}
               {doneCount > 0 && <span>{doneCount} הורדו</span>}
               {localManga && translatedPages > 0 && <span>{translatedPages} עמודים תורגמו</span>}
             </div>
@@ -124,8 +154,8 @@ export default function TitlePage() {
               <button className="btn primary" disabled={!data || !chapters.length || waitingFor !== null} onClick={readNow}>
                 {waitingFor !== null ? <Spinner label="מוריד את הפרק הראשון…" /> : <><Play size={16} /> קריאה עכשיו</>}
               </button>
-              <button className="btn" disabled={!pending.length} onClick={() => askAll(pending)}>
-                <Download size={16} /> הורדת כל הפרקים{pending.length && pending.length < chapters.length ? ` (${pending.length} שנותרו)` : ""}
+              <button className="btn" disabled={!stats.missing} onClick={() => askAll(chapters)}>
+                <Download size={16} /> הורדת כל הפרקים{stats.missing && stats.missing < stats.distinct ? ` (${stats.missing} שנותרו)` : ""}
               </button>
               {data?.local_manga_id && (
                 <button className="btn ghost" onClick={() => nav(`/manga/${data.local_manga_id}`)}><Library size={16} /> בספרייה שלי</button>
@@ -151,14 +181,24 @@ export default function TitlePage() {
         <div className="spread">
           <h2>פרקים</h2>
           <div className="row wrap">
+            {stats.groups.length > 1 && (
+              <>
+                <span className="small muted">קבוצת תרגום מועדפת:</span>
+                <select className="select" style={{ width: "auto", height: 28 }} value={preferred ?? ""} aria-label="קבוצת תרגום מועדפת"
+                  onChange={(e) => setPref(e.target.value || null)}>
+                  <option value="">אוטומטי</option>
+                  {stats.groups.map(([g, n]) => <option key={g} value={g}>{g} ({n})</option>)}
+                </select>
+              </>
+            )}
             {sel.size > 0 && (
               <button className="btn primary sm" onClick={() => download(chapters.filter((c) => sel.has(c.chapter_ref)))}>
                 <Download size={14} /> הורדת פרק{sel.size > 1 ? `ים (${sel.size})` : ""}
               </button>
             )}
             <span className="small muted">טווח:</span>
-            <input className="input" style={{ width: 70, height: 28 }} type="number" min={1} placeholder="מ-" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} aria-label="מפרק" />
-            <input className="input" style={{ width: 70, height: 28 }} type="number" min={1} placeholder="עד" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} aria-label="עד פרק" />
+            <input className="input" style={{ width: 70, height: 28 }} type="number" min={0} placeholder="מ-" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} aria-label="ממספר פרק" />
+            <input className="input" style={{ width: 70, height: 28 }} type="number" min={0} placeholder="עד" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} aria-label="עד מספר פרק" />
             <button className="btn sm" onClick={downloadRange}>הורדת הטווח</button>
           </div>
         </div>
@@ -177,6 +217,7 @@ export default function TitlePage() {
                   <span className="faint small" style={{ width: 34 }}>{i + 1}</span>
                   <span className="grow" dir="auto">{c.title}</span>
                   {c.scanlator && <span className="faint small" dir="auto">{c.scanlator}</span>}
+                  {c.page_count === 1 && <span className="badge" title="לפעמים זה רק עמוד שמפנה לאתר המו״ל">עמוד אחד</span>}
                   {st === "done" && <span className="badge ok">הורד</span>}
                   {(st === "queued" || st === "running") && <span className="badge run">בהורדה</span>}
                   {st === "failed" && <span className="badge bad">נכשל</span>}
@@ -195,14 +236,18 @@ export default function TitlePage() {
       </div>
 
       {confirm && (
-        <Modal title={`להוריד ${confirm.length} פרקים?`} onClose={() => setConfirm(null)}
+        <Modal title={`להוריד ${confirm.plan.chapters} פרקים?`} onClose={() => setConfirm(null)}
           actions={<>
             <button className="btn ghost" onClick={() => setConfirm(null)}>ביטול</button>
-            <button className="btn primary" onClick={() => { download(confirm); setConfirm(null); }}>הורדה</button>
+            <button className="btn primary" onClick={() => { download(confirm.list, true); setConfirm(null); }}>הורדה</button>
           </>}>
+          <p>
+            גרסה אחת לכל פרק{confirm.plan.preferred ? <>, עדיפות לקבוצה <b dir="auto">{confirm.plan.preferred}</b></> : ""}.{" "}
+            <span className="muted">{planText(confirm.plan)}</span>
+          </p>
           <p className="muted">
             {hint.data
-              ? `לפי הפרקים שכבר הורדו, צפוי לתפוס בערך ${bytes(hint.data * confirm.length)} בדיסק.`
+              ? `לפי הפרקים שכבר הורדו, צפוי לתפוס בערך ${bytes(hint.data * confirm.plan.chapters)} בדיסק.`
               : "עוד אין הורדות קודמות, אז אי אפשר להעריך בצורה אמינה כמה מקום זה יתפוס."}{" "}
             ההורדה רצה ברקע ואפשר לעצור אותה במסך ההורדות.
           </p>

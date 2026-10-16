@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupReport, CheckReport, MergeReport, SetupNeeds, SetupStep,
   Category, ChapterView, Download, EditorPage, EngineStatus, Estimate, GlossaryEntry, HistoryEntry, HomeData, ImportReport,
   Job, MangaDetail, MangaSummary, MemoryEntry, PageState, Region, RemoteChapter, RemoteDetail, RemoteManga, Settings, SourceInfo,
   SearchOutcome, SourceOverview, ExtensionStore, Extension, ProviderStatus, InstalledSource, SourcePreference,
+  DownloadPlan, CleanupPlan, CleanupResult,
 } from "./types";
 
 export const api = {
@@ -34,7 +36,7 @@ export const api = {
   ollamaModels: (endpoint: string) => invoke<string[]>("list_ollama_models", { endpoint }),
   claudeCliStatus: (path?: string) => invoke<{ found: boolean; path: string | null }>("claude_cli_status", { path }),
   engineStatus: () => invoke<EngineStatus>("engine_status"),
-  installEngine: () => invoke<string>("install_engine"),
+  installEngine: (gpu = false) => invoke<string>("install_engine", { gpu }),
   prepareModels: () => invoke<unknown>("prepare_models"),
   // translation
   estimate: (chapterIds: number[]) => invoke<Estimate>("estimate_translation", { chapterIds }),
@@ -71,8 +73,16 @@ export const api = {
   browse: (sourceId: string, kind: string, query: string | null, page: number) =>
     invoke<{ mangas: RemoteManga[]; has_next_page: boolean }>("browse_source", { sourceId, kind, query, page }),
   remoteManga: (mangaRef: string) => invoke<RemoteDetail>("remote_manga", { mangaRef }),
-  enqueueDownloads: (manga: RemoteManga, chapters: RemoteChapter[]) =>
-    invoke<{ added: number; skipped: number; manga_id: number }>("enqueue_downloads", { manga, chapters }),
+  /** `bestOnly`: one version per chapter (download all / a range); otherwise exactly the chapters given. */
+  enqueueDownloads: (manga: RemoteManga, chapters: RemoteChapter[], opts: { bestOnly?: boolean; preferred?: string | null } = {}) =>
+    invoke<{ added: number; skipped: number; manga_id: number; plan: DownloadPlan | null }>("enqueue_downloads", {
+      manga, chapters, bestOnly: opts.bestOnly ?? false, preferred: opts.preferred ?? null,
+    }),
+  planDownloads: (manga: RemoteManga, chapters: RemoteChapter[], preferred: string | null) =>
+    invoke<DownloadPlan>("plan_downloads", { manga, chapters, preferred }),
+  duplicateCleanupPlan: (mangaId: number, placeholders: boolean) => invoke<CleanupPlan>("duplicate_cleanup_plan", { mangaId, placeholders }),
+  cleanUpDuplicates: (mangaId: number, placeholders: boolean, chapterIds: number[], downloadIds: number[]) =>
+    invoke<CleanupResult>("clean_up_duplicates", { mangaId, placeholders, chapterIds, downloadIds }),
   downloads: () => invoke<Download[]>("list_downloads"),
   downloadAction: (id: number, action: "cancel" | "retry") => invoke<void>("download_action", { id, action }),
   clearFinishedDownloads: () => invoke<number>("clear_finished_downloads"),
@@ -86,6 +96,13 @@ export const api = {
   remoteChapterCount: (mangaRef: string) => invoke<number>("remote_chapter_count", { mangaRef }),
   stores: () => invoke<ExtensionStore[]>("list_stores"),
   addStore: (url: string) => invoke<ExtensionStore>("add_store", { url }),
+  checkNewChapters: () => invoke<CheckReport>("check_new_chapters"),
+  syncNow: () => invoke<MergeReport>("sync_now"),
+  setupNeeds: () => invoke<SetupNeeds>("setup_needs"),
+  setupEverything: (gpu: boolean) => invoke<SetupStep[]>("setup_everything", { gpu }),
+  createBackup: (path: string, includeChapters: boolean) => invoke<BackupReport>("create_backup", { path, includeChapters }),
+  restoreBackup: (path: string) => invoke<number>("restore_backup", { path }),
+  applySourceDefaults: () => invoke<{ stores_added: string[]; extensions_installed: string[] }>("apply_source_defaults"),
   validateStoreUrl: (url: string) => invoke<string>("validate_store_url", { url }),
   removeStore: (indexUrl: string) => invoke<void>("remove_store", { indexUrl }),
   extensions: (refresh: boolean) => invoke<Extension[]>("list_extensions", { refresh }),

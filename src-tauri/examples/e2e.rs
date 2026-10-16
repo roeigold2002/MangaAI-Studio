@@ -5,6 +5,8 @@
 //!
 //! Usage: cargo run --example e2e -- <cbz-or-folder> [provider-id] [model] [pages]
 //! Spends real provider credits for the pages processed.
+//! MANGAAI_E2E_BATCH=n: pages per request (default: all pages, at most 4);
+//! MANGAAI_E2E_CONC=n: requests in flight at once (default: the provider's setting).
 
 use std::sync::Arc;
 
@@ -32,22 +34,35 @@ async fn main() -> anyhow::Result<()> {
     let data_root = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| tmp.path().join("app"));
     let paths = Paths::new(data_root)?;
     let db = Db::open(&paths.db_path())?;
-    let app_data = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(dirs_app_data);
+    let app_data = std::env::var_os("MANGAAI_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(mangaai_lib::platform::default_data_dir);
     let (worker_dir, python) = worker::resolve(&app_data, None);
-    let fonts = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts").canonicalize()?;
+    let fonts = mangaai_lib::platform::canonicalize(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/fonts"))?;
     let vision = Arc::new(PythonWorker::new(WorkerConfig {
         python,
         worker_dir,
         models_dir: app_data.join("models"),
         fonts_dir: fonts,
         log_path: paths.logs_dir().join("worker.log"),
+        native_dir: worker::resolve_native_dir(None),
     }));
     println!("worker health: {}", vision.health().await.map_err(|e| anyhow::anyhow!(e.message))?);
 
     // settings: chosen provider, cloud notice accepted for this run
     let mut s = settings::load(&db)?;
     s.translation.active_provider = provider_id.clone();
-    s.translation.pages_per_request = pages.min(4) as u32;
+    let env_num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+    s.translation.pages_per_request = env_num("MANGAAI_E2E_BATCH").unwrap_or(pages.min(4) as u32);
+    if let Some(c) = env_num("MANGAAI_E2E_CONC") {
+        for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {
+            p.max_concurrency = c;
+        }
+    }
+    // MANGAAI_E2E_IMAGES=0: text only (pages with local OCR need no page image)
+    if std::env::var("MANGAAI_E2E_IMAGES").as_deref() == Ok("0") {
+        for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {
+            p.send_images = false;
+        }
+    }
     s.cloud_notice_accepted = true;
     if let Some(m) = &model {
         for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {
@@ -99,11 +114,21 @@ async fn main() -> anyhow::Result<()> {
     settings::save(&db, &good)?;
 
     // Recover: retry only the failed pages with the working configuration.
+    let calls = || db.with(|c| Ok(c.query_row("SELECT count(*) FROM usage_log", [], |r| r.get::<_, i64>(0))?)).map_err(|e| anyhow::anyhow!(e.message));
+    let calls0 = calls()?;
     let t0 = std::time::Instant::now();
     let job = jobs::retry_failed(&db, failing).map_err(|e| anyhow::anyhow!(e.message))?;
     runner.run_job(job).await.map_err(|e| anyhow::anyhow!(e.message))?;
     let j = jobs::get(&db, job).map_err(|e| anyhow::anyhow!(e.message))?;
-    println!("retry job: status={} completed={} failed={} cost=${:.4} error={:?} ({:.1}s)", j.status, j.completed, j.failed, j.cost_usd, j.error, t0.elapsed().as_secs_f32());
+    let secs = t0.elapsed().as_secs_f32();
+    println!("retry job: status={} completed={} failed={} cost=${:.4} error={:?} ({:.1}s)", j.status, j.completed, j.failed, j.cost_usd, j.error, secs);
+    println!(
+        "timing: {} page(s), {} provider call(s), {:.1}s/page, ${:.4}/page",
+        page_ids.len(),
+        calls()? - calls0,
+        secs / page_ids.len() as f32,
+        j.cost_usd / page_ids.len() as f64
+    );
     assert_eq!(j.status, "done", "retry after failure must succeed");
 
     for pid in &page_ids {
@@ -147,9 +172,4 @@ async fn main() -> anyhow::Result<()> {
     println!("original unchanged: yes");
     vision.shutdown().await;
     Ok(())
-}
-
-fn dirs_app_data() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    home.join("Library/Application Support/com.mangaai.studio")
 }

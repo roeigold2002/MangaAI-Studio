@@ -20,7 +20,7 @@ use crate::secrets::SecretStore;
 use crate::settings::{self, AppSettings};
 use crate::sources::{RemoteChapter, RemoteManga, SourceAdapter, Suwayomi};
 use crate::translate::memory::{self, GlossaryInput};
-use crate::worker::{find_uv, PythonWorker, Vision};
+use crate::worker::{PythonWorker, Vision};
 
 pub struct AppState {
     pub runtime: Arc<crate::runtime::Runtime>,
@@ -124,7 +124,16 @@ pub fn set_chapters_read(st: State<'_, AppState>, chapter_ids: Vec<i64>, read: b
 
 #[tauri::command]
 pub fn save_progress(st: State<'_, AppState>, chapter_id: i64, page_idx: i64) -> R<()> {
-    queries::save_progress(&st.db, chapter_id, page_idx)
+    queries::save_progress(&st.db, chapter_id, page_idx)?;
+    match jobs::translate_ahead(&st.db, chapter_id, page_idx) {
+        Ok(Some(job)) => {
+            tracing::info!(job, chapter_id, "translating the next chapter ahead");
+            st.job_notify.notify_one();
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("translate ahead skipped: {}", e.message),
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -261,6 +270,7 @@ pub async fn test_provider(st: State<'_, AppState>, provider_id: String) -> R<Va
         schema: json!({"type":"object","additionalProperties":false,"required":["translation"],"properties":{"translation":{"type":"string"}}}),
         max_output_tokens: 1024,
         effort: "low".into(),
+        thinking_budget: Some(1024),
     };
     let started = std::time::Instant::now();
     let r = p.complete(&req).await.map_err(|e| AppError::new("provider", format!("{:?}: {}", e.kind, e.message)))?;
@@ -291,30 +301,151 @@ pub async fn engine_status(st: State<'_, AppState>) -> R<Value> {
         "python": cfg.python,
         "worker_dir": cfg.worker_dir,
         "models_dir": cfg.models_dir,
-        "uv": find_uv(),
+        "uv": crate::worker::find_uv_for(st.resource_dir.as_deref()),
         "health": health.as_ref().ok(),
         "error": health.err(),
+        "gpus": crate::platform::nvidia_gpus().await,
+        "cuda_build": cuda_requirements(&cfg.worker_dir).is_some(),
     }))
 }
 
-/// Create/refresh the worker's Python environment with uv (network: PyPI).
+/// Pinned NVIDIA build of PyTorch, Windows only: PyPI's Windows wheel is CPU-only, while
+/// macOS uses MPS and Linux's PyPI wheel already includes CUDA.
+fn cuda_requirements(worker_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let f = worker_dir.join("requirements-cuda-win.txt");
+    (cfg!(all(windows, target_arch = "x86_64")) && f.exists()).then_some(f)
+}
+
+fn tail(out: &std::process::Output) -> String {
+    let log = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    log.chars().rev().take(1500).collect::<String>().chars().rev().collect()
+}
+
+/// Create/refresh the worker's Python environment with uv (network: PyPI; with `gpu`, also
+/// download.pytorch.org). Without `gpu` the environment is exactly the locked CPU one.
 #[tauri::command]
-pub async fn install_engine(st: State<'_, AppState>) -> R<String> {
-    let uv = find_uv().ok_or_else(|| AppError::new("uv_missing", "uv is required: https://docs.astral.sh/uv/ (brew install uv)"))?;
+pub async fn install_engine(st: State<'_, AppState>, gpu: Option<bool>) -> R<String> {
+    install_engine_inner(&st, gpu.unwrap_or(false)).await
+}
+
+async fn install_engine_inner(st: &AppState, gpu: bool) -> AppResult<String> {
+    let install_hint = if cfg!(windows) { "winget install astral-sh.uv" } else { "brew install uv" };
+    let uv = crate::worker::find_uv_for(st.resource_dir.as_deref()).ok_or_else(|| AppError::new("uv_missing", format!("uv is required: https://docs.astral.sh/uv/ ({install_hint})")))?;
     let cfg = st.worker.config().clone();
     let venv = st.paths.root.join("worker-venv");
     st.worker.shutdown().await;
-    let out = tokio::process::Command::new(uv)
+    let out = crate::platform::no_window(&mut tokio::process::Command::new(&uv))
         .args(["sync", "--managed-python", "--python", "3.12", "--no-dev", "--frozen", "--project"])
         .arg(&cfg.worker_dir)
         .env("UV_PROJECT_ENVIRONMENT", &venv)
         .output()
         .await?;
-    let log = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if !out.status.success() {
-        return Err(AppError::new("install_failed", log.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>()));
+        return Err(AppError::new("install_failed", tail(&out)));
     }
-    Ok("installed — restart the app to use the new engine".into())
+    if gpu {
+        let req = cuda_requirements(&cfg.worker_dir)
+            .ok_or_else(|| AppError::new("unsupported", "the NVIDIA build is only offered for Windows x64"))?;
+        // Same torch version as the lock, built for CUDA; it bundles the CUDA runtime and has
+        // the same Python dependencies, so only the wheel itself is swapped (hash-checked).
+        let out = crate::platform::no_window(&mut tokio::process::Command::new(&uv))
+            .args(["pip", "install", "--no-deps", "--require-hashes", "--python"])
+            .arg(venv.join("Scripts").join("python.exe"))
+            .arg("-r")
+            .arg(&req)
+            .output()
+            .await?;
+        if !out.status.success() {
+            return Err(AppError::new("install_failed", tail(&out)));
+        }
+        return Ok("מנוע ה-AI הותקן עם תמיכה בכרטיס המסך NVIDIA".into());
+    }
+    Ok("מנוע ה-AI הותקן".into())
+}
+
+/// What one-click setup would still do on this computer (for the Home screen).
+#[tauri::command]
+pub async fn setup_needs(st: State<'_, AppState>) -> R<Value> {
+    let cfg = st.worker.config().clone();
+    let health = if cfg.python.exists() { st.worker.health().await.ok() } else { None };
+    let models_ok = health.as_ref().is_some_and(|h| ["detector", "ocr", "ocr_en", "lama"].iter().all(|k| h["models"][*k] == true));
+    let s = settings::load(&st.db)?;
+    let sources_ok = !s.sources.suwayomi_enabled || (s.sources.managed && st.runtime.is_installed()) || (!s.sources.managed && !s.sources.suwayomi_url.is_empty() && s.onboarding_done);
+    let gpus = crate::platform::nvidia_gpus().await;
+    Ok(json!({
+        "engine": health.is_some(),
+        "models": models_ok,
+        "sources": sources_ok,
+        "gpu_offered": cuda_requirements(&cfg.worker_dir).is_some() && !gpus.is_empty(),
+        "gpu_name": gpus.first(),
+        "cuda": health.as_ref().is_some_and(|h| h["cuda"] == true),
+    }))
+}
+
+/// Everything a new install needs, one step after another: the AI engine (with the NVIDIA build
+/// when `gpu`), its models, and the sources server with its default stores and extensions.
+/// Steps already done are skipped; a failed step is reported and the others still run.
+/// Progress goes out as `setup-progress` events {step, status: running|done|skipped|failed, detail}.
+#[tauri::command]
+pub async fn setup_everything(app: tauri::AppHandle, st: State<'_, AppState>, gpu: Option<bool>) -> R<Vec<Value>> {
+    use tauri::Emitter;
+    let mut results = vec![];
+    let mut report = |step: &str, status: &str, detail: String| {
+        let v = json!({"step": step, "status": status, "detail": detail});
+        let _ = app.emit("setup-progress", v.clone());
+        if status != "running" {
+            results.push(v);
+        }
+    };
+
+    // 1. AI engine
+    let cfg = st.worker.config().clone();
+    let health = if cfg.python.exists() { st.worker.health().await.ok() } else { None };
+    let want_gpu = gpu.unwrap_or(false) && cuda_requirements(&cfg.worker_dir).is_some();
+    let has_cuda = health.as_ref().is_some_and(|h| h["cuda"] == true);
+    if health.is_some() && (!want_gpu || has_cuda) {
+        report("engine", "skipped", "already installed".into());
+    } else {
+        report("engine", "running", String::new());
+        match install_engine_inner(&st, want_gpu).await {
+            Ok(m) => report("engine", "done", m),
+            Err(e) => report("engine", "failed", e.message),
+        }
+    }
+
+    // 2. models (only the missing ones are downloaded)
+    report("models", "running", String::new());
+    match st.worker.prepare_models().await {
+        Ok(_) => report("models", "done", String::new()),
+        Err(e) => report("models", "failed", e.message),
+    }
+
+    // 3. sources: managed Suwayomi with the default stores and extensions
+    let s = settings::load(&st.db)?;
+    if !s.sources.suwayomi_enabled || (!s.sources.managed && !s.sources.suwayomi_url.is_empty() && s.onboarding_done) {
+        report("sources", "skipped", "a server of your own is configured".into());
+    } else {
+        report("sources", "running", String::new());
+        match setup_sources(app.clone(), st.clone()).await {
+            Ok(_) => {
+                // The server lists a new extension's sources a moment after installing it; refresh
+                // the screens only once they are there, so "manga sites: none" is not shown.
+                if let Ok(sw) = suwayomi(&st) {
+                    for _ in 0..15 {
+                        let ready = sw.sources().await.map(|l| l.iter().any(|s| crate::catalog::is_website(&s.id))).unwrap_or(false);
+                        if ready {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+                let _ = app.emit("sources-changed", json!({}));
+                report("sources", "done", String::new())
+            }
+            Err(e) => report("sources", "failed", e.message),
+        }
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -546,6 +677,8 @@ pub struct RemoteDetail {
     /// chapter_ref -> chapter id in the local library (downloaded chapters)
     pub local_chapters: std::collections::HashMap<String, i64>,
     pub local_manga_id: Option<i64>,
+    /// The scanlation group the user prefers for this manga (bulk downloads).
+    pub preferred_scanlator: Option<String>,
 }
 
 #[tauri::command]
@@ -553,6 +686,8 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
     let a = make_adapter(&st.db, st.secrets.as_ref())?;
     let manga = a.manga(&manga_ref).await?;
     let chapters = a.chapters(&manga_ref).await?;
+    downloads::backfill_scanlators(&st.db, &manga.source_id, &chapters)?;
+    let preferred_scanlator = downloads::stored_preference(&st.db, &manga)?;
     let (downloads, local_chapters, local) = st.db.with(|c| {
         let mut s = c.prepare("SELECT chapter_ref, status FROM download WHERE source_id = ?1 AND manga_ref = ?2")?;
         let map = s
@@ -571,7 +706,19 @@ pub async fn remote_manga(st: State<'_, AppState>, manga_ref: String) -> R<Remot
             .optional()?;
         Ok((map, chapters, local))
     })?;
-    Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local })
+    Ok(RemoteDetail { manga, chapters, downloads, local_chapters, local_manga_id: local, preferred_scanlator })
+}
+
+/// What a bulk download of `chapters` would queue: one version per chapter number,
+/// without one-page placeholders and chapters already held.
+#[tauri::command]
+pub fn plan_downloads(
+    st: State<'_, AppState>,
+    manga: RemoteManga,
+    chapters: Vec<RemoteChapter>,
+    preferred: Option<String>,
+) -> R<crate::chapter_pick::PlanSummary> {
+    Ok(downloads::plan_bulk(&st.db, &manga, &chapters, preferred.as_deref())?.summary)
 }
 
 /// Record the source's language on the local manga (OCR and translation depend on it).
@@ -593,9 +740,27 @@ async fn set_manga_language(st: &AppState, manga: &RemoteManga, manga_id: i64) {
     }
 }
 
+/// Queue chapters. With `best_only` (download all / a range) one version per chapter is
+/// picked and `preferred` (the group chosen on the page, None = automatic) is remembered;
+/// otherwise the chapters are queued exactly as chosen.
 #[tauri::command]
-pub async fn enqueue_downloads(st: State<'_, AppState>, manga: RemoteManga, chapters: Vec<RemoteChapter>) -> R<Value> {
-    let (added, skipped) = downloads::enqueue(&st.db, &manga, &chapters)?;
+pub async fn enqueue_downloads(
+    st: State<'_, AppState>,
+    manga: RemoteManga,
+    chapters: Vec<RemoteChapter>,
+    best_only: Option<bool>,
+    preferred: Option<String>,
+) -> R<Value> {
+    let (added, skipped, summary) = if best_only.unwrap_or(false) {
+        let plan = downloads::plan_bulk(&st.db, &manga, &chapters, preferred.as_deref())?;
+        let (added, skipped) = downloads::enqueue_picks(&st.db, &manga, &plan.picks, true)?;
+        let mid = downloads::local_manga(&st.db, &manga)?;
+        downloads::set_preference(&st.db, mid, preferred.as_deref())?;
+        (added, skipped, Some(plan.summary))
+    } else {
+        let (added, skipped) = downloads::enqueue(&st.db, &manga, &chapters)?;
+        (added, skipped, None)
+    };
     let manga_id = downloads::local_manga(&st.db, &manga)?;
     set_manga_language(&st, &manga, manga_id).await;
     // cover in the background
@@ -621,7 +786,31 @@ pub async fn enqueue_downloads(st: State<'_, AppState>, manga: RemoteManga, chap
         });
     }
     st.dl_notify.notify_one();
-    Ok(json!({"added": added, "skipped": skipped, "manga_id": manga_id}))
+    Ok(json!({"added": added, "skipped": skipped, "manga_id": manga_id, "plan": summary}))
+}
+
+/// Preview of the duplicate cleanup for a library manga (nothing is changed).
+#[tauri::command]
+pub async fn duplicate_cleanup_plan(st: State<'_, AppState>, manga_id: i64, placeholders: bool) -> R<downloads::CleanupPlan> {
+    let db = st.db.clone();
+    let lib = st.paths.library_dir();
+    blocking(move || downloads::cleanup_plan(&db, &lib, manga_id, placeholders)).await
+}
+
+/// Remove the confirmed extra versions (and placeholders) of a manga's chapters.
+#[tauri::command]
+pub async fn clean_up_duplicates(
+    st: State<'_, AppState>,
+    manga_id: i64,
+    placeholders: bool,
+    chapter_ids: Vec<i64>,
+    download_ids: Vec<i64>,
+) -> R<downloads::CleanupResult> {
+    let db = st.db.clone();
+    let lib = st.paths.library_dir();
+    let out = blocking(move || downloads::cleanup_apply(&db, &lib, manga_id, placeholders, &chapter_ids, &download_ids)).await?;
+    st.dl_notify.notify_one();
+    Ok(out)
 }
 
 #[tauri::command]
@@ -805,7 +994,7 @@ async fn wait_reachable(s: &Suwayomi, secs: u64) -> bool {
 }
 
 /// One-click setup: download + verify the pinned official release, start it on
-/// 127.0.0.1, register the official (verified) extension store. Installs no extensions.
+/// 127.0.0.1, register the default extension stores (official + Keiyoushi). Installs no extensions.
 #[tauri::command]
 pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<SourceOverview> {
     use tauri::Emitter;
@@ -824,14 +1013,7 @@ pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<
     settings::save(&st.db, &s)?;
     start_managed(&st).await?;
     let sw = suwayomi(&st)?;
-    if crate::catalog::list_stores(&sw).await.map(|l| l.is_empty()).unwrap_or(false) {
-        match crate::catalog::add_store(&sw, crate::catalog::OFFICIAL_STORE_URL).await {
-            Ok(_) => {
-                let _ = crate::catalog::refresh_extensions(&sw).await;
-            }
-            Err(e) => tracing::warn!("official store not added: {}", e.message),
-        }
-    }
+    apply_source_defaults_to(&sw, &s).await;
     st.dl_notify.notify_one();
     source_overview(st).await
 }
@@ -891,6 +1073,104 @@ pub async fn add_store(st: State<'_, AppState>, url: String) -> R<crate::catalog
     let store = crate::catalog::add_store(&sw, &url).await?;
     let _ = crate::catalog::refresh_extensions(&sw).await;
     Ok(store)
+}
+
+#[derive(Serialize)]
+pub struct SourceDefaults {
+    pub stores_added: Vec<String>,
+    pub extensions_installed: Vec<String>,
+}
+
+/// Default stores, then the default extensions from settings. Failures are logged, not fatal:
+/// the server works without them and the user can add them later.
+async fn apply_source_defaults_to(sw: &Suwayomi, s: &settings::AppSettings) -> SourceDefaults {
+    let stores_added = match crate::catalog::add_default_stores(sw).await {
+        Ok(v) => v.into_iter().map(|x| x.name).collect(),
+        Err(e) => {
+            tracing::warn!("default stores not added: {}", e.message);
+            vec![]
+        }
+    };
+    let extensions_installed = match crate::catalog::install_default_extensions(sw, &s.sources.default_extensions).await {
+        Ok(v) => v.into_iter().map(|x| x.name).collect(),
+        Err(e) => {
+            tracing::warn!("default extensions not installed: {}", e.message);
+            vec![]
+        }
+    };
+    SourceDefaults { stores_added, extensions_installed }
+}
+
+/// Merge the sync folder's state into the library and write the merged state back.
+#[tauri::command]
+pub async fn sync_now(st: State<'_, AppState>) -> R<crate::sync::MergeReport> {
+    let db = st.db.clone();
+    blocking(move || run_sync(&db)).await
+}
+
+/// One sync pass with the configured folder (error if none is set).
+pub fn run_sync(db: &crate::db::Db) -> AppResult<crate::sync::MergeReport> {
+    let mut s = settings::load(db)?;
+    if s.sync.folder.trim().is_empty() {
+        return Err(AppError::new("sync_off", "choose a sync folder first"));
+    }
+    let rep = crate::sync::sync_folder(db, std::path::Path::new(s.sync.folder.trim()))?;
+    s.sync.last_sync_at = Some(crate::db::now());
+    settings::save(db, &s)?;
+    Ok(rep)
+}
+
+#[tauri::command]
+pub async fn create_backup(st: State<'_, AppState>, path: String, include_chapters: bool) -> R<crate::sync::BackupReport> {
+    let (db, root) = (st.db.clone(), st.paths.root.clone());
+    blocking(move || crate::sync::create_backup(&db, &root, std::path::Path::new(&path), include_chapters)).await
+}
+
+/// Stage a backup; it replaces the library when the app starts again.
+#[tauri::command]
+pub async fn restore_backup(st: State<'_, AppState>, path: String) -> R<usize> {
+    let root = st.paths.root.clone();
+    blocking(move || crate::sync::stage_restore(&root, std::path::Path::new(&path))).await
+}
+
+/// Look for new chapters of the library's online series now (the background check runs the same).
+#[tauri::command]
+pub async fn check_new_chapters(app: tauri::AppHandle, st: State<'_, AppState>) -> R<crate::follow::CheckReport> {
+    let s = settings::load(&st.db)?;
+    let report = crate::follow::check(&st.db, make_adapter(&st.db, st.secrets.as_ref())?, s.sources.auto_download_new).await?;
+    announce_new_chapters(&app, &report);
+    if s.sources.auto_download_new && !report.new.is_empty() {
+        st.dl_notify.notify_one();
+    }
+    Ok(report)
+}
+
+/// Tell the user about new chapters: an event for the open window and a system notification.
+pub fn announce_new_chapters(app: &tauri::AppHandle, report: &crate::follow::CheckReport) {
+    use tauri::Emitter;
+    use tauri_plugin_notification::NotificationExt;
+    if report.new.is_empty() {
+        return;
+    }
+    let _ = app.emit("new-chapters", report);
+    let body = report
+        .new
+        .iter()
+        .map(|n| match n.chapters.as_slice() {
+            [one] => format!("{}: {one}", n.title),
+            many => format!("{}: {} פרקים חדשים", n.title, many.len()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let title = if report.new.iter().all(|n| n.queued) { "פרקים חדשים בהורדה" } else { "יצאו פרקים חדשים" };
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Add whatever default stores and extensions are missing (for servers set up earlier).
+#[tauri::command]
+pub async fn apply_source_defaults(st: State<'_, AppState>) -> R<SourceDefaults> {
+    let s = settings::load(&st.db)?;
+    Ok(apply_source_defaults_to(&suwayomi(&st)?, &s).await)
 }
 
 #[tauri::command]

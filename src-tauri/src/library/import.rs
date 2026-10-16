@@ -60,7 +60,7 @@ fn insert_pages(tx: &rusqlite::Transaction, chapter_id: i64, pages: &[PageRecord
 /// Import (or rescan) a manga folder / archive. Identified by its absolute path,
 /// so importing the same path twice updates the existing entry.
 pub fn import_path(db: &Db, root: &Path) -> AppResult<ImportReport> {
-    let root = root.canonicalize().map_err(|e| AppError::new("not_found", format!("{}: {e}", root.display())))?;
+    let root = crate::platform::canonicalize(root).map_err(|e| AppError::new("not_found", format!("{}: {e}", root.display())))?;
     let src = scan_manga(&root)?;
     import_scanned(db, src)
 }
@@ -331,12 +331,12 @@ mod tests {
         assert_eq!((r2.chapters_added, r2.chapters_unchanged), (1, 1));
 
         // A page added to an existing chapter keeps the old page rows.
-        let old_id: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE path LIKE '%ch1/2.png'", [], |r| r.get(0))?)).unwrap();
+        let old_id: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE path LIKE '%ch1_2.png'", [], |r| r.get(0))?)).unwrap();
         write(&root.join("ch1/3.png"), &png(4));
         let r3 = import_path(&db, &root).unwrap();
         assert_eq!(r3.chapters_updated, 1);
         assert_eq!(r3.pages_added, 1);
-        let same_id: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE path LIKE '%ch1/2.png'", [], |r| r.get(0))?)).unwrap();
+        let same_id: i64 = db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE path LIKE '%ch1_2.png'", [], |r| r.get(0))?)).unwrap();
         assert_eq!(old_id, same_id);
         let count: i64 = db.with(|c| Ok(c.query_row("SELECT count(*) FROM manga", [], |r| r.get(0))?)).unwrap();
         assert_eq!(count, 1);

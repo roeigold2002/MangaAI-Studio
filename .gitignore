@@ -10,3 +10,5 @@ __pycache__/
 .ruff_cache/
 *.pyc
 tests/fixtures/generated/
+# built by scripts/build-fribidi.ps1 (Windows)
+src-tauri/windows/native/

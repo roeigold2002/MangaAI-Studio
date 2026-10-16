@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errMessage } from "../lib/api";
 import { toast, useApp } from "../lib/store";
-import { chapterTranslationBadge, langName } from "../lib/util";
+import { chapterTranslationBadge, credentialStoreName, langName } from "../lib/util";
 import { Field, Modal, Spinner } from "./ui";
 import { TranslateDialog } from "./TranslateDialog";
 import type { ChapterInfo, ProviderStatus } from "../lib/types";
@@ -100,7 +100,7 @@ export function ProviderSetup({ status, onDone, onClose }: { status: ProviderSta
         <div className="callout bad small">Claude Code לא נמצא במחשב. התקן אותו והתחבר (פקודה: claude), או בחר ספק אחר.</div>
       )}
       {meta.key && (
-        <Field label="מפתח API" hint="נשמר ב-Keychain של macOS בלבד">
+        <Field label="מפתח API" hint={`נשמר רק ב${credentialStoreName()}`}>
           <input className="input ltr" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} placeholder="מדביקים כאן" />
         </Field>
       )}

@@ -83,6 +83,66 @@ def _ocr_crop(crop: Image.Image, device: str) -> tuple[str, float | None]:
     return text, conf
 
 
+def _en_ocr_lines(lines: list[Image.Image], device: str) -> list[tuple[str, float | None]]:
+    """TrOCR over single text lines, batched. Returns (text, confidence) per line."""
+    import torch
+
+    proc, model = models.en_ocr(device)
+    px = proc(images=[ln.convert("RGB") for ln in lines], return_tensors="pt").pixel_values.to(device, model.dtype)
+    with torch.inference_mode():
+        gen = model.generate(px, max_new_tokens=48, use_cache=True, output_scores=True, return_dict_in_generate=True)
+    texts = proc.batch_decode(gen.sequences, skip_special_tokens=True)
+    confs: list[float | None] = [None] * len(lines)
+    try:
+        scores = model.compute_transition_scores(gen.sequences, gen.scores, normalize_logits=True)
+        for i in range(len(lines)):
+            # only the tokens this line generated (later steps are padding after its end token)
+            n = int((gen.sequences[i, 1:] != proc.tokenizer.pad_token_id).sum())
+            lp = scores[i, : max(1, n)].float().cpu().numpy()
+            confs[i] = float(np.exp(np.mean(np.clip(lp, np.log(1e-6), 0.0))))
+    except Exception:
+        pass
+    return [(t.strip(), c) for t, c in zip(texts, confs)]
+
+
+def join_en_lines(lines: list[str]) -> str:
+    """Lettered English is broken into short centered lines; rejoin them into one sentence.
+    A word split with a hyphen at the end of a line is put back together."""
+    out = ""
+    for ln in (x.strip() for x in lines):
+        if not ln:
+            continue
+        if out.endswith("-") and not out.endswith("--") and ln[:1].isalpha() and out[-2:-1].isalpha():
+            out = out[:-1] + ln
+        else:
+            out = f"{out} {ln}" if out else ln
+    return out
+
+
+# A line the model is this unsure about is art or an effect, not text.
+EN_MIN_LINE_CONF = 0.25
+
+
+def en_ocr_box(img: Image.Image, box: Box, device: str) -> tuple[str, float | None]:
+    w, h = img.size
+    # Tight crops: wider margins made TrOCR drop apostrophes ("IM GONNA") on real pages.
+    pad = max(1, int(min(box[2] - box[0], box[3] - box[1]) * 0.02))
+    c = expand(box, pad, w, h)
+    if c[2] - c[0] < 4 or c[3] - c[1] < 4:
+        return "", None
+    crop = img.crop(tuple(c))
+    bw, bh = crop.size
+    bands = split_lines(np.array(crop.convert("L"))) or [(0, bh)]
+    pieces = []
+    for a, b in bands:
+        m = max(2, int((b - a) * 0.08))
+        pieces.append(crop.crop((0, max(0, a - m), bw, min(bh, b + m))))
+    read = _en_ocr_lines(pieces, device)
+    kept = [(t, cf) for t, cf in read if t and (cf is None or cf >= EN_MIN_LINE_CONF)]
+    confs = [cf for _, cf in kept if cf is not None]
+    return join_en_lines([t for t, _ in kept]), (min(confs) if confs else None)
+
+
 _ONLY_PUNCT = re.compile(r"^[\s\.\,…・！？!?ー〜~―─「」『』（）()、。\-]*$")
 
 
@@ -144,8 +204,10 @@ def ocr_box(img: Image.Image, box: Box, device: str) -> tuple[str, float | None]
     return _ocr_crop(crop, device)
 
 
-def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35, rtl: bool = True, ocr: bool = True) -> dict:
-    """ocr=False: detection only (pages not in Japanese); the translator reads the text from the image."""
+def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35, rtl: bool = True, ocr: bool = True,
+            lang: str = "ja") -> dict:
+    """lang: "ja" (manga-ocr) or "en" (TrOCR). ocr=False: detection only (other languages);
+    the translator then reads the text from the page image."""
     t0 = time.time()
     device = models.pick_device(device_pref)
     img = Image.open(image_path)
@@ -184,12 +246,12 @@ def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35,
         boxes = r["boxes"]
         bbox = union_box(boxes)
         bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        vertical = bh > bw * 1.15
+        vertical = lang == "ja" and bh > bw * 1.15  # lettered English is always horizontal
         # OCR each piece in reading order (vertical Japanese columns read right-to-left).
         order = sorted(range(len(boxes)), key=lambda i: (-boxes[i][2], boxes[i][1])) if vertical else reading_order(boxes, rtl)
         parts, confs = [], []
         for i in (order if ocr else []):
-            text, conf = ocr_box(img, boxes[i], device)
+            text, conf = (en_ocr_box if lang == "en" else ocr_box)(img, boxes[i], device)
             if text:
                 parts.append(text)
                 if conf is not None:
@@ -224,9 +286,9 @@ def analyze(image_path: str, device_pref: str = "auto", threshold: float = 0.35,
     }
 
 
-def ocr_region(image_path: str, box: Box, device_pref: str = "auto") -> dict:
+def ocr_region(image_path: str, box: Box, device_pref: str = "auto", lang: str = "ja") -> dict:
     device = models.pick_device(device_pref)
     img = Image.open(image_path).convert("RGB")
-    text, conf = ocr_box(img, box, device)
+    text, conf = (en_ocr_box if lang == "en" else ocr_box)(img, box, device)
     return {"text": text, "confidence": conf}
 

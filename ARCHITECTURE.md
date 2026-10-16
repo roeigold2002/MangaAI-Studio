@@ -7,7 +7,7 @@ Upstream evaluation: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md).
 
 ```
 ┌──────────────────────────── Tauri 2 desktop app ────────────────────────────┐
-│  React + TypeScript UI (WKWebView)                                           │
+│  React + TypeScript UI (WKWebView on macOS, WebView2 on Windows)             │
 │   Home · Library · Details · Reader · Editor · Browse · Downloads · Queue ·   │
 │   History · Favorites · Translation settings · App settings                  │
 │        │ invoke() commands / events          ▲ mangaimg:// image protocol    │
@@ -15,7 +15,7 @@ Upstream evaluation: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md).
 │  Rust core (src-tauri)                                                        │
 │   db (SQLite, migrations) · library (import, natural sort, rescan)            │
 │   assets (originals / clean / translated / thumbs, atomic writes)             │
-│   secrets (macOS Keychain via keyring) · settings                             │
+│   secrets (Keychain / Windows Credential Manager) · settings · platform        │
 │   providers (Anthropic, OpenAI, Gemini, OpenAI-compatible, Ollama, Claude CLI)│
 │   translate (prompt v-N, schema validation, translation memory, cost)         │
 │   pipeline (per-page stages + cache keys) · jobs (persistent queue)           │
@@ -47,11 +47,12 @@ Upstream evaluation: [docs/UPSTREAM_EVALUATION.md](docs/UPSTREAM_EVALUATION.md).
 | Sources | `src-tauri/src/sources.rs` | `SourceAdapter` trait; Suwayomi GraphQL client |
 | Catalog | `src-tauri/src/catalog.rs` | Search across sources, de-duplication, source health, extension stores and extensions |
 | Managed server | `src-tauri/src/runtime.rs` | One-click install (checksum-verified) and start/stop of Suwayomi on 127.0.0.1 |
+| Platform | `src-tauri/src/platform.rs` | OS differences: home/data dirs, canonical paths without the `\\?\` prefix, console-less child processes and a kill-on-close job object (Windows), NVIDIA GPU probe |
 | Downloads | `src-tauri/src/downloads/` | Download queue writing into the local library |
 
 ## Data layout
 
-App data dir (`~/Library/Application Support/com.mangaai.studio/` on macOS):
+App data dir (`~/Library/Application Support/com.mangaai.studio/` on macOS, `%APPDATA%\com.mangaai.studio\` on Windows):
 
 ```
 library.db                     SQLite (metadata, progress, jobs, OCR, translations, glossary)
@@ -83,7 +84,7 @@ Approved (user-edited) regions are never overwritten by background retranslation
 
 ## Security & privacy
 
-- API keys live in the macOS Keychain; never in SQLite, settings JSON, logs or the webview.
+- API keys live in the OS credential store (macOS Keychain, Windows Credential Manager); never in SQLite, settings JSON, logs or the webview.
   Provider calls run in Rust; the webview only sees "key configured: yes/no".
 - No telemetry. Network calls only to: the configured AI provider during translation,
   the configured Suwayomi address, and Hugging Face for model download during setup.

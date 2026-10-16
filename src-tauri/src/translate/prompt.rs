@@ -12,7 +12,9 @@ pub fn schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["translations", "glossary_suggestions", "page_notes"],
+        // Short fields first: after a long `translations` array models tend to stop without
+        // them, and the Claude CLI then rejects the answer and has it written all over again.
+        "required": ["page_notes", "glossary_suggestions", "translations"],
         "properties": {
             "translations": {
                 "type": "array",

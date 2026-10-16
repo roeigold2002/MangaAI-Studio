@@ -80,7 +80,7 @@ impl Default for TranslationSettings {
             job_cost_limit_usd: 0.0,
             sfx_mode: "translate".into(),
             local_only: false,
-            auto_translate_next: false,
+            auto_translate_next: true,
         }
     }
 }
@@ -93,7 +93,8 @@ pub fn default_providers() -> Vec<ProviderConfig> {
             kind: "claude_cli".into(),
             label: "Claude Code (המנוי שלך)".into(),
             model: "opus".into(),
-            max_concurrency: 1,
+            // two page batches translated at once (each is its own CLI process)
+            max_concurrency: 2,
             timeout_secs: 300,
             ..Default::default()
         },
@@ -233,7 +234,18 @@ pub struct SourceSettings {
     /// Source languages to search, in order of preference (multi-language extensions
     /// such as MangaDex install one source per language).
     pub languages: Vec<String>,
+    /// Extensions (package names) the one-click setup installs from the default stores,
+    /// so a new install can search right away. Edit or empty the list to change it.
+    pub default_extensions: Vec<String>,
+    /// Look for new chapters of the library's online series every this many hours (0 = never).
+    pub check_new_chapters_hours: u32,
+    /// Queue new chapters for download when they are found (otherwise only notify).
+    pub auto_download_new: bool,
 }
+
+/// MangaDex and MangaFire from the Keiyoushi store (multi-language; `languages` picks
+/// which of their per-language sources are searched).
+pub const DEFAULT_EXTENSIONS: &[&str] = &["eu.kanade.tachiyomi.extension.all.mangadex", "eu.kanade.tachiyomi.extension.all.mangafire"];
 
 impl Default for SourceSettings {
     fn default() -> Self {
@@ -244,7 +256,10 @@ impl Default for SourceSettings {
             download_concurrency: 2,
             managed: false,
             managed_port: 4567,
-            languages: vec!["ja".into(), "en".into()],
+            languages: vec!["en".into()],
+            default_extensions: DEFAULT_EXTENSIONS.iter().map(|s| s.to_string()).collect(),
+            check_new_chapters_hours: 12,
+            auto_download_new: true,
         }
     }
 }
@@ -264,6 +279,15 @@ pub struct AppSettings {
     pub cloud_notice_accepted: bool,
     /// The first-run welcome was shown (or dismissed).
     pub onboarding_done: bool,
+    pub sync: SyncSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SyncSettings {
+    /// Folder shared between computers (OneDrive, Dropbox, a network share…). Empty = off.
+    pub folder: String,
+    pub last_sync_at: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -278,6 +302,7 @@ impl Default for AppSettings {
             sources: SourceSettings::default(),
             cloud_notice_accepted: false,
             onboarding_done: false,
+            sync: SyncSettings::default(),
         }
     }
 }

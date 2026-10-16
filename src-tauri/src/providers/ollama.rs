@@ -113,6 +113,7 @@ mod tests {
             schema: json!({}),
             max_output_tokens: 10,
             effort: "low".into(),
+            thinking_budget: None,
         };
         assert_eq!(p.complete(&req).await.unwrap_err().kind, ErrorKind::Unavailable);
     }

@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Compass, Download, FolderOpen, Plus, Power, RefreshCw, Search, Trash2 } from "lucide-react";
 import { api, errMessage } from "../lib/api";
-import { toast, toastError, useApp, useLoad } from "../lib/store";
-import { langName, remoteUrl } from "../lib/util";
+import { toast, toastError, useApp, useEvent, useLoad } from "../lib/store";
+import { credentialStoreName, langName, remoteUrl } from "../lib/util";
 import { Empty, ErrorBox, Field, Modal, Spinner } from "./ui";
 import { SourceGate, sourceState } from "./SourceGate";
 import type { Extension, InstalledSource, SourcePreference } from "../lib/types";
@@ -12,6 +12,7 @@ import type { Extension, InstalledSource, SourcePreference } from "../lib/types"
 /** Advanced: server connection, managed engine, extension stores and extensions. */
 export function SourcesAdvanced() {
   const overview = useLoad(() => api.sourceOverview(), []);
+  useEvent("sources-changed", overview.reload);
   const o = overview.data;
   const state = sourceState(o);
   const serverUp = o?.health?.server === "ok";
@@ -81,7 +82,14 @@ function EngineAndConnection({ onChanged }: { onChanged: () => void }) {
       <div className="grid-form">
         <Field label="כתובת השרת"><input className="input ltr" value={s.suwayomi_url} onChange={(e) => setS({ ...s, suwayomi_url: e.target.value })} /></Field>
         <Field label="שם משתמש (אם הוגדרה הזדהות)"><input className="input ltr" value={s.suwayomi_user} onChange={(e) => setS({ ...s, suwayomi_user: e.target.value })} /></Field>
-        <Field label="סיסמה" hint="נשמרת ב-Keychain"><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
+        <Field label="סיסמה" hint={`נשמרת ב${credentialStoreName()}`}><input className="input ltr" type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} /></Field>
+        <Field label="בדיקת פרקים חדשים" hint="כל כמה שעות לבדוק את הסדרות בספרייה (0 = לא לבדוק)">
+          <input className="input" type="number" min={0} max={168} value={s.check_new_chapters_hours} onChange={(e) => setS({ ...s, check_new_chapters_hours: Number(e.target.value) })} />
+        </Field>
+        <label className="check" style={{ alignSelf: "end" }}>
+          <input type="checkbox" checked={s.auto_download_new} onChange={(e) => setS({ ...s, auto_download_new: e.target.checked })} />
+          <span>להוריד פרקים חדשים אוטומטית (אחרת רק התראה)</span>
+        </label>
         <Field label="הורדות במקביל" hint="נכנס לתוקף אחרי הפעלה מחדש"><input className="input" type="number" min={1} max={6} value={s.download_concurrency} onChange={(e) => setS({ ...s, download_concurrency: Number(e.target.value) })} /></Field>
       </div>
       <Field label="שפות לחיפוש" hint="מקורות כמו MangaDex מותקנים כמקור נפרד לכל שפה. החיפוש רץ רק על השפות שנבחרו. זיהוי הטקסט לתרגום תומך כרגע ביפנית.">
@@ -139,15 +147,36 @@ function Stores({ onChanged }: { onChanged: () => void }) {
     }
   }
 
+  async function addDefaults() {
+    setBusy(true);
+    try {
+      const r = await api.applySourceDefaults();
+      const added = [...r.stores_added, ...r.extensions_installed];
+      toast(added.length ? `נוספו: ${added.join(", ")}` : "כל ברירות המחדל כבר מותקנות", "ok");
+      reload();
+      onChanged();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>חנויות תוספים</h2>
-        <button className="btn sm" onClick={() => setAdding(true)}><Plus size={14} /> הוספת חנות</button>
+        <div className="row">
+          <button className="btn sm" disabled={busy} onClick={addDefaults} title="Keiyoushi + התוספים שמותקנים אוטומטית">
+            <Plus size={14} /> השלמת ברירות המחדל
+          </button>
+          <button className="btn sm" onClick={() => setAdding(true)}><Plus size={14} /> הוספת חנות</button>
+        </div>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         חנות תוספים היא קובץ אינדקס (JSON) שמפרסם גורם חיצוני, עם רשימת תוספי מקורות. Suwayomi מוריד ממנה רק את התוספים שתבחר להתקין.
-        החנות הרשמית של Suwayomi כוללת רק את התוסף "Suwayomi" לחיבור לשרת אחר.
+        ברירת המחדל: החנות הרשמית של Suwayomi (רק תוסף לחיבור לשרת אחר) וחנות הקהילה Keiyoushi (אלפי תוספים, ביניהם אתרי הוצאות לאור יפניות).
+        בהתקנה הראשונה מותקנים אוטומטית גם MangaDex ו-MangaFire (מקורות באנגלית כברירת מחדל); תוספים אחרים מותקנים רק בבחירתך.
       </p>
       {loading && <Spinner label="טוען…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
@@ -179,6 +208,9 @@ function Stores({ onChanged }: { onChanged: () => void }) {
           </Field>
           <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setUrl("https://raw.githubusercontent.com/suwayomi/tachiyomi-extension/repo/index.min.json")}>
             מילוי החנות הרשמית של Suwayomi
+          </button>
+          <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setUrl("https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json")}>
+            מילוי חנות Keiyoushi
           </button>
           <p className="small muted">התוספים בחנות לא מותקנים אוטומטית. השרת בודק את הכתובת ומסרב אם היא לא חנות תקינה.</p>
           {err && <div className="callout bad small" dir="auto">{err}</div>}
