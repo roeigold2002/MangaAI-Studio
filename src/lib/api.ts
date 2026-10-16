@@ -86,6 +86,7 @@ export const api = {
   remoteChapterCount: (mangaRef: string) => invoke<number>("remote_chapter_count", { mangaRef }),
   stores: () => invoke<ExtensionStore[]>("list_stores"),
   addStore: (url: string) => invoke<ExtensionStore>("add_store", { url }),
+  addDefaultStores: () => invoke<ExtensionStore[]>("add_default_stores"),
   validateStoreUrl: (url: string) => invoke<string>("validate_store_url", { url }),
   removeStore: (indexUrl: string) => invoke<void>("remove_store", { indexUrl }),
   extensions: (refresh: boolean) => invoke<Extension[]>("list_extensions", { refresh }),

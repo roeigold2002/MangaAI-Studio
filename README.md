@@ -145,11 +145,16 @@ Searching and downloading go through **Suwayomi-Server**, which runs Mihon/Tachi
   with its own data folder. The app starts it with every launch and stops it on quit.
 - **You already run Suwayomi** → Settings → מקורות ותוספים: enter its address (a *server* URL, not a store URL).
   A server the app did not install is never started, stopped or modified.
-- **Sources come from extension stores.** On setup the app registers the official Suwayomi store. It was
-  verified in October 2026 to contain one extension, "Suwayomi", which connects to another Suwayomi server
-  and provides no manga websites. Other stores are published by third parties. The app does not add them on
-  its own and installs no extension without an explicit click. Add a store and install extensions under
-  **Settings → מקורות ותוספים (מתקדם)**.
+- **Sources come from extension stores.** On setup the app registers two stores:
+  - the official Suwayomi store. Its only extension, "Suwayomi", connects to another Suwayomi server and
+    provides no manga websites.
+  - the **Keiyoushi** community store (`keiyoushi/extensions`, registered through its `repo.json`). It had
+    1,425 extensions in October 2026, 139 of them Japanese, including publisher sites such as BookWalker and Comic Action.
+    Its old `index.min.json` is now only an "Outdated App" stub; Suwayomi follows `repo.json` to the current `index.pb`.
+
+  Both are third-party indexes; the app installs **no extension** without an explicit click. A server set up
+  before Keiyoushi became a default gets a "הוספת Keiyoushi" button under
+  **Settings → מקורות ותוספים (מתקדם)**, where other stores can be added or removed too.
 - Suwayomi 2.x replaced the old `extensionRepos` setting with **Extension Stores**
   (`addExtensionStore` / `removeExtensionStore`). The app uses the Extension Store API. Stores can be added or
   removed; Suwayomi has no "disable" operation.
@@ -237,9 +242,10 @@ cd src-tauri && cargo run --example suwayomi_managed
 - Reading order inside a page uses a row heuristic. Complex layouts may need reordering in the editor.
 - Text removal on detailed artwork can leave traces. These pages are flagged "complex background" in the editor.
 - Cost estimates are approximate. Actual reported usage is recorded per provider in the queue.
-- No manga website source ships with the app or the official store. Online manga sites need a third-party
-  extension store chosen by the user. The live tests used the official store's "Suwayomi" extension and
-  the server's Local source.
+- No manga website source ships with the app. Website extensions come from the Keiyoushi store (or another
+  store the user adds) and are installed only on request. The live tests used the official store's "Suwayomi"
+  extension, the server's Local source, and registration of both default stores
+  (`cargo run --example suwayomi_managed`).
 - Linux: the Rust core and worker test suites pass in a Debian container. The desktop window itself
   was not run there.
 - Windows: tested on Windows 11 x64 (MSVC build, WebView2). Windows on ARM is not built. The installer is not

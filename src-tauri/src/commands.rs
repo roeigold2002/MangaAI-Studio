@@ -837,7 +837,7 @@ async fn wait_reachable(s: &Suwayomi, secs: u64) -> bool {
 }
 
 /// One-click setup: download + verify the pinned official release, start it on
-/// 127.0.0.1, register the official (verified) extension store. Installs no extensions.
+/// 127.0.0.1, register the default extension stores (official + Keiyoushi). Installs no extensions.
 #[tauri::command]
 pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<SourceOverview> {
     use tauri::Emitter;
@@ -856,13 +856,8 @@ pub async fn setup_sources(app: tauri::AppHandle, st: State<'_, AppState>) -> R<
     settings::save(&st.db, &s)?;
     start_managed(&st).await?;
     let sw = suwayomi(&st)?;
-    if crate::catalog::list_stores(&sw).await.map(|l| l.is_empty()).unwrap_or(false) {
-        match crate::catalog::add_store(&sw, crate::catalog::OFFICIAL_STORE_URL).await {
-            Ok(_) => {
-                let _ = crate::catalog::refresh_extensions(&sw).await;
-            }
-            Err(e) => tracing::warn!("official store not added: {}", e.message),
-        }
+    if let Err(e) = crate::catalog::add_default_stores(&sw).await {
+        tracing::warn!("default stores not added: {}", e.message);
     }
     st.dl_notify.notify_one();
     source_overview(st).await
@@ -923,6 +918,12 @@ pub async fn add_store(st: State<'_, AppState>, url: String) -> R<crate::catalog
     let store = crate::catalog::add_store(&sw, &url).await?;
     let _ = crate::catalog::refresh_extensions(&sw).await;
     Ok(store)
+}
+
+/// Register the default stores that are missing (for servers set up before a default was added).
+#[tauri::command]
+pub async fn add_default_stores(st: State<'_, AppState>) -> R<Vec<crate::catalog::ExtensionStore>> {
+    crate::catalog::add_default_stores(&suwayomi(&st)?).await
 }
 
 #[tauri::command]

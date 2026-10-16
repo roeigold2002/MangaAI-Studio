@@ -1,12 +1,13 @@
 //! Live check of the app-managed Suwayomi-Server on this OS (no mocks): download the pinned
 //! release (checksum verified), unpack, start it on 127.0.0.1, wait until GraphQL answers,
-//! list sources, then stop it. This is what "התקנה והפעלה" does in the app.
+//! list sources, register the default extension stores, then stop it. This is what "התקנה והפעלה" does in the app.
 //!
 //! Usage: cargo run --example suwayomi_managed -- [port]
 //! Installs into the app's data folder (MANGAAI_DATA_DIR overrides), so the app reuses it.
 
 use std::time::{Duration, Instant};
 
+use mangaai_lib::catalog;
 use mangaai_lib::runtime::Runtime;
 use mangaai_lib::sources::{SourceAdapter, Suwayomi};
 
@@ -42,6 +43,17 @@ async fn main() -> anyhow::Result<()> {
     println!("server up after {:.0}s: {version}", t0.elapsed().as_secs_f32());
     let sources = sw.sources().await.map_err(e)?;
     println!("sources: {:?}", sources.iter().map(|s| format!("{} [{}]", s.name, s.lang)).collect::<Vec<_>>());
+
+    // default extension stores, as the app's one-click setup registers them
+    let added = catalog::add_default_stores(&sw).await.map_err(e)?;
+    println!("default stores added: {:?}", added.iter().map(|s| &s.name).collect::<Vec<_>>());
+    let stores = catalog::list_stores(&sw).await.map_err(e)?;
+    let exts = catalog::list_extensions(&sw).await.map_err(e)?;
+    for st in &stores {
+        let n = exts.iter().filter(|x| x.store_index_url.as_deref() == Some(st.index_url.as_str())).count();
+        println!("  store {} ({}): {n} extensions", st.name, st.index_url);
+    }
+    anyhow::ensure!(catalog::missing_default_stores(&stores).is_empty(), "a default store is missing");
 
     rt.stop().await;
     tokio::time::sleep(Duration::from_secs(2)).await;

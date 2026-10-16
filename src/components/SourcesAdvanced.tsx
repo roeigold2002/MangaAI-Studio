@@ -139,15 +139,35 @@ function Stores({ onChanged }: { onChanged: () => void }) {
     }
   }
 
+  async function addDefaults() {
+    setBusy(true);
+    try {
+      const added = await api.addDefaultStores();
+      toast(added.length ? `נוספו: ${added.map((s) => s.name).join(", ")}` : "החנויות כבר רשומות", "ok");
+      reload();
+      onChanged();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="panel">
       <div className="panel-head">
         <h2>חנויות תוספים</h2>
-        <button className="btn sm" onClick={() => setAdding(true)}><Plus size={14} /> הוספת חנות</button>
+        <div className="row">
+          {data && !data.some((s) => s.index_url.toLowerCase().includes("keiyoushi/extensions")) && (
+            <button className="btn sm" disabled={busy} onClick={addDefaults}><Plus size={14} /> הוספת Keiyoushi</button>
+          )}
+          <button className="btn sm" onClick={() => setAdding(true)}><Plus size={14} /> הוספת חנות</button>
+        </div>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         חנות תוספים היא קובץ אינדקס (JSON) שמפרסם גורם חיצוני, עם רשימת תוספי מקורות. Suwayomi מוריד ממנה רק את התוספים שתבחר להתקין.
-        החנות הרשמית של Suwayomi כוללת רק את התוסף "Suwayomi" לחיבור לשרת אחר.
+        ברירת המחדל: החנות הרשמית של Suwayomi (רק תוסף לחיבור לשרת אחר) וחנות הקהילה Keiyoushi (אלפי תוספים, ביניהם אתרי הוצאות לאור יפניות).
+        התקנת תוסף תמיד דורשת בחירה שלך.
       </p>
       {loading && <Spinner label="טוען…" />}
       {error && <ErrorBox error={error} onRetry={reload} />}
@@ -179,6 +199,9 @@ function Stores({ onChanged }: { onChanged: () => void }) {
           </Field>
           <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setUrl("https://raw.githubusercontent.com/suwayomi/tachiyomi-extension/repo/index.min.json")}>
             מילוי החנות הרשמית של Suwayomi
+          </button>
+          <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setUrl("https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json")}>
+            מילוי חנות Keiyoushi
           </button>
           <p className="small muted">התוספים בחנות לא מותקנים אוטומטית. השרת בודק את הכתובת ומסרב אם היא לא חנות תקינה.</p>
           {err && <div className="callout bad small" dir="auto">{err}</div>}
