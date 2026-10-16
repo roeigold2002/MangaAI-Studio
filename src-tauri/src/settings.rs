@@ -279,6 +279,15 @@ pub struct AppSettings {
     pub cloud_notice_accepted: bool,
     /// The first-run welcome was shown (or dismissed).
     pub onboarding_done: bool,
+    pub sync: SyncSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct SyncSettings {
+    /// Folder shared between computers (OneDrive, Dropbox, a network share…). Empty = off.
+    pub folder: String,
+    pub last_sync_at: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -293,6 +302,7 @@ impl Default for AppSettings {
             sources: SourceSettings::default(),
             cloud_notice_accepted: false,
             onboarding_done: false,
+            sync: SyncSettings::default(),
         }
     }
 }

@@ -65,7 +65,7 @@ export interface Settings {
     managed: boolean; managed_port: number; languages: string[]; default_extensions: string[];
     check_new_chapters_hours: number; auto_download_new: boolean };
   cloud_notice_accepted: boolean;
-  onboarding_done: boolean;
+  onboarding_done: boolean; sync: { folder: string; last_sync_at: string | null };
 }
 
 export interface Job {
@@ -142,6 +142,11 @@ export interface CleanupEntry {
 export interface CleanupPlan { manga_id: number; remove: CleanupEntry[]; kept: number; preferred: string | null; bytes: number }
 export interface CleanupResult { chapters_removed: number; downloads_cancelled: number; bytes_freed: number }
 
+export interface MergeReport {
+  series_added: string[]; series_elsewhere: string[]; chapters_updated: number; glossary_updated: number;
+  memory_added: number; favorites_changed: number;
+}
+export interface BackupReport { path: string; bytes: number; files: number }
 export interface NewChapters { manga_id: number; title: string; chapters: string[]; queued: boolean }
 export interface CheckReport { checked: number; failed: string[]; new: NewChapters[] }
 

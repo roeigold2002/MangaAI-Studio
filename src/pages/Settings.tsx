@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import TranslationSettingsPage from "./TranslationSettings";
 import { SourcesAdvanced } from "../components/SourcesAdvanced";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { BackupSync } from "../components/BackupSync";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 import { api, errMessage } from "../lib/api";
@@ -131,6 +132,7 @@ function GeneralAndData({ tab }: { tab: string }) {
 
       {tab === "data" && (
       <>
+      <BackupSync />
       <div className="panel">
         <div className="panel-head"><h2>נתונים</h2></div>
         <div className="col">

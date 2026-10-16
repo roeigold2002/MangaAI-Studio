@@ -19,6 +19,7 @@ pub mod runtime;
 pub mod secrets;
 pub mod settings;
 pub mod sources;
+pub mod sync;
 pub mod translate;
 pub mod worker;
 
@@ -121,6 +122,12 @@ pub fn run() {
             Box::leak(Box::new(guard));
             tracing::info!(version = env!("CARGO_PKG_VERSION"), data = %root.display(), "starting");
 
+            // A restore chosen in the previous session replaces the database before it is opened.
+            match sync::apply_pending_restore(&root) {
+                Ok(Some(kept)) => tracing::info!(kept = %kept.display(), "restored a backup"),
+                Ok(None) => {}
+                Err(e) => tracing::error!("backup not restored: {}", e.message),
+            }
             let db = Db::open(&paths.db_path())?;
             let recovered_jobs = jobs::recover(&db)?;
             let recovered_dl = downloads::recover(&db)?;
@@ -254,6 +261,25 @@ pub fn run() {
                     }
                 });
             }
+            // Sync with the shared folder shortly after launch and every 15 minutes (when one is set).
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    loop {
+                        let set = settings::load(&db).map(|s| !s.sync.folder.trim().is_empty()).unwrap_or(false);
+                        if set {
+                            let d = db.clone();
+                            match tauri::async_runtime::spawn_blocking(move || commands::run_sync(&d)).await {
+                                Ok(Ok(r)) => tracing::info!(updated = r.chapters_updated, added = r.series_added.len(), "synced"),
+                                Ok(Err(e)) => tracing::warn!("sync failed: {}", e.message),
+                                Err(_) => {}
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+                    }
+                });
+            }
             let search_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
             app.manage(AppState { runtime, search_gen, db, paths, engine, worker: vision, secrets, job_notify, dl_notify, resource_dir });
             Ok(())
@@ -275,6 +301,12 @@ pub fn run() {
             // Quit from the menu / Cmd+Q / last window: stop the worker and the managed server.
             if let tauri::RunEvent::Exit = event {
                 if let Some(st) = app.try_state::<AppState>() {
+                    // last sync so the other computer sees where reading stopped
+                    if settings::load(&st.db).map(|s| !s.sync.folder.trim().is_empty()).unwrap_or(false) {
+                        if let Err(e) = commands::run_sync(&st.db) {
+                            tracing::warn!("sync on exit failed: {}", e.message);
+                        }
+                    }
                     let (w, r) = (st.worker.clone(), st.runtime.clone());
                     tauri::async_runtime::block_on(async move {
                         w.shutdown().await;
@@ -366,6 +398,9 @@ macro_rules! app_handlers {
             commands::validate_store_url,
             commands::apply_source_defaults,
             commands::check_new_chapters,
+            commands::sync_now,
+            commands::create_backup,
+            commands::restore_backup,
             commands::remove_store,
             commands::list_extensions,
             commands::change_extension,

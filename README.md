@@ -235,6 +235,23 @@ logs/             app.log, worker.log (no API keys)
 **Settings → Data** shows the sizes, opens the folder, clears thumbnails and exports everything
 (minus images and secrets) to JSON.
 
+### Backup and sync between computers
+
+**Settings → Data → גיבוי וסנכרון.**
+- **Sync:** choose a folder both computers can reach (OneDrive, Dropbox, Google Drive or a network share). Each sync merges
+  the folder's `mangaai-sync.json` into the library ("newer wins" per item), then writes the merged state back, so
+  computers converge. Syncs run 30 s after launch, every 15 minutes, on exit and on demand.
+  - **What syncs:** reading progress, read marks, favorites, categories, the glossary, translation memory, and the list
+    of online series.
+  - **How items are matched:** a series by its source and reference (local imports by title), a chapter by its number
+    or title. Read marks, categories, glossary entries and memory are never deleted by a sync.
+  - **What doesn't travel:** pages and translations. An online series that exists only on the other computer is added
+    to the library, and the new-chapter check then downloads it. Local imports can't travel, since their files are
+    on the other computer.
+- **Backup:** a ZIP with a consistent copy of the database (`VACUUM INTO`) and the readable sync state, optionally with
+  the downloaded chapters. API keys are never included. **Restore** checks the file and extracts missing chapter files;
+  the database is swapped in on the next start, and the previous one is kept as `library.db.before-restore-<time>`.
+
 ## Tests
 
 GitHub Actions (`.github/workflows/ci.yml`) runs these three suites and the TypeScript check on Windows and macOS (Apple Silicon)

@@ -1012,6 +1012,38 @@ async fn apply_source_defaults_to(sw: &Suwayomi, s: &settings::AppSettings) -> S
     SourceDefaults { stores_added, extensions_installed }
 }
 
+/// Merge the sync folder's state into the library and write the merged state back.
+#[tauri::command]
+pub async fn sync_now(st: State<'_, AppState>) -> R<crate::sync::MergeReport> {
+    let db = st.db.clone();
+    blocking(move || run_sync(&db)).await
+}
+
+/// One sync pass with the configured folder (error if none is set).
+pub fn run_sync(db: &crate::db::Db) -> AppResult<crate::sync::MergeReport> {
+    let mut s = settings::load(db)?;
+    if s.sync.folder.trim().is_empty() {
+        return Err(AppError::new("sync_off", "choose a sync folder first"));
+    }
+    let rep = crate::sync::sync_folder(db, std::path::Path::new(s.sync.folder.trim()))?;
+    s.sync.last_sync_at = Some(crate::db::now());
+    settings::save(db, &s)?;
+    Ok(rep)
+}
+
+#[tauri::command]
+pub async fn create_backup(st: State<'_, AppState>, path: String, include_chapters: bool) -> R<crate::sync::BackupReport> {
+    let (db, root) = (st.db.clone(), st.paths.root.clone());
+    blocking(move || crate::sync::create_backup(&db, &root, std::path::Path::new(&path), include_chapters)).await
+}
+
+/// Stage a backup; it replaces the library when the app starts again.
+#[tauri::command]
+pub async fn restore_backup(st: State<'_, AppState>, path: String) -> R<usize> {
+    let root = st.paths.root.clone();
+    blocking(move || crate::sync::stage_restore(&root, std::path::Path::new(&path))).await
+}
+
 /// Look for new chapters of the library's online series now (the background check runs the same).
 #[tauri::command]
 pub async fn check_new_chapters(app: tauri::AppHandle, st: State<'_, AppState>) -> R<crate::follow::CheckReport> {
