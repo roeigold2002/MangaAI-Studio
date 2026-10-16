@@ -62,13 +62,13 @@ def _health(_params: dict) -> dict:
 def _analyze(p: dict) -> dict:
     from .analyze import analyze
 
-    return analyze(p["image"], p.get("device", "auto"), float(p.get("threshold", 0.35)), p.get("rtl", True), p.get("ocr", True))
+    return analyze(p["image"], p.get("device", "auto"), float(p.get("threshold", 0.35)), p.get("rtl", True), p.get("ocr", True), p.get("lang", "ja"))
 
 
 def _ocr_region(p: dict) -> dict:
     from .analyze import ocr_region
 
-    return ocr_region(p["image"], p["box"], p.get("device", "auto"))
+    return ocr_region(p["image"], p["box"], p.get("device", "auto"), p.get("lang", "ja"))
 
 
 def _clean(p: dict) -> dict:

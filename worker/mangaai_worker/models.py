@@ -12,6 +12,10 @@ log = logging.getLogger("mangaai.models")
 
 DETECTOR_REPO = "ogkalu/comic-text-and-bubble-detector"
 OCR_REPO = "kha-white/manga-ocr-base"
+# English OCR (printed text, one line at a time). Chosen over trocr-base-handwritten after a
+# comparison on real English manga scanlations; pinned so cached analyses stay comparable.
+EN_OCR_REPO = "microsoft/trocr-base-printed"
+EN_OCR_REVISION = "93450be3f1ed40a930690d951ef3932687cc1892"
 LAMA_URL = "https://github.com/Sanster/models/releases/download/AnimeMangaInpainting/anime-manga-big-lama.pt"
 LAMA_SHA256 = "479d3afdcb7ed2fd944ed4ebcc39ca45b33491f0f2e43eb1000bd623cfb41823"
 LAMA_FILE = "anime-manga-big-lama.pt"
@@ -47,8 +51,9 @@ def hf_cached(repo: str) -> bool:
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        files = ("config.json", "model.safetensors") if repo == DETECTOR_REPO else ("config.json", "pytorch_model.bin")
-        return all(isinstance(try_to_load_from_cache(repo, f), str) for f in files)
+        files = ("config.json", "pytorch_model.bin") if repo == OCR_REPO else ("config.json", "model.safetensors")
+        rev = EN_OCR_REVISION if repo == EN_OCR_REPO else None
+        return all(isinstance(try_to_load_from_cache(repo, f, revision=rev), str) for f in files)
     except Exception:
         return False
 
@@ -82,6 +87,27 @@ def ocr(device: str):
             model = MangaOcrModel.from_pretrained(OCR_REPO).to(device).eval()
             _cache[key] = (proc, tok, model)
             log.info("ocr loaded on %s", device)
+        return _cache[key]
+
+
+def en_ocr(device: str):
+    """TrOCR for English lines: (processor, model). Half precision on GPUs."""
+    key = f"ocr_en:{device}"
+    with _lock:
+        if key not in _cache:
+            if not hf_cached(EN_OCR_REPO):
+                raise ModelUnavailable(
+                    "the English OCR model is not downloaded: Translation settings → AI engine → download missing models"
+                )
+            import torch
+            from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+
+            proc = TrOCRProcessor.from_pretrained(EN_OCR_REPO, revision=EN_OCR_REVISION)
+            model = VisionEncoderDecoderModel.from_pretrained(EN_OCR_REPO, revision=EN_OCR_REVISION)
+            if device in ("cuda", "mps"):
+                model = model.half()
+            _cache[key] = (proc, model.to(device).eval())
+            log.info("english ocr loaded on %s", device)
         return _cache[key]
 
 
@@ -121,6 +147,7 @@ def status() -> dict:
     return {
         "detector": hf_cached(DETECTOR_REPO),
         "ocr": hf_cached(OCR_REPO),
+        "ocr_en": hf_cached(EN_OCR_REPO),
         "lama": lama_path().exists(),
         "lama_path": str(lama_path()),
     }
@@ -133,11 +160,11 @@ def prepare(progress=None) -> dict:
 
     from huggingface_hub import snapshot_download
 
-    for repo in (DETECTOR_REPO, OCR_REPO):
+    for repo, rev in ((DETECTOR_REPO, None), (OCR_REPO, None), (EN_OCR_REPO, EN_OCR_REVISION)):
         if not hf_cached(repo):
             if progress:
                 progress(f"downloading {repo}")
-            snapshot_download(repo, local_files_only=False)
+            snapshot_download(repo, revision=rev, local_files_only=False)
     p = lama_path()
     if not p.exists():
         if progress:

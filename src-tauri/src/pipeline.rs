@@ -55,9 +55,18 @@ pub struct PageCtx {
 }
 
 impl PageCtx {
-    /// Japanese pages get local OCR; other languages are read from the image by the translator.
+    /// Language of the local OCR engine for this page: Japanese (manga-ocr) and English
+    /// (TrOCR). Other languages are read from the page image by the translator.
+    pub fn ocr_lang(&self) -> Option<&'static str> {
+        match self.source_lang.as_str() {
+            "ja" => Some("ja"),
+            "en" => Some("en"),
+            _ => None,
+        }
+    }
+
     pub fn local_ocr(&self) -> bool {
-        self.source_lang == "ja"
+        self.ocr_lang().is_some()
     }
 }
 
@@ -319,14 +328,18 @@ impl Engine {
             &av,
             &format!("{:.2}", s.ocr.detector_threshold),
             if p.rtl { "rtl" } else { "ltr" },
-            if p.local_ocr() { "ocr" } else { "vision-read" },
+            match p.ocr_lang() {
+                Some("ja") => "ocr", // unchanged, so existing Japanese analyses stay valid
+                Some(l) => if l == "en" { "ocr-en" } else { "ocr-other" },
+                None => "vision-read",
+            },
         ]);
         let st = page_state(&self.db, p.page_id)?;
         if !force && st.analysis_key.as_deref() == Some(key.as_str()) {
             return Ok(());
         }
         let src = self.source_file(p)?;
-        let analysis = self.vision.analyze(&src, p.rtl, s.ocr.detector_threshold, &s.ocr.device, p.local_ocr()).await?;
+        let analysis = self.vision.analyze(&src, p.rtl, s.ocr.detector_threshold, &s.ocr.device, p.ocr_lang()).await?;
         self.store_analysis(p.page_id, &analysis.regions, &key)?;
         Ok(())
     }

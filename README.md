@@ -10,7 +10,7 @@ React, a Rust core and a Python worker; Linux builds and tests pass but the wind
 - **Reader**: single page, two-page spread, vertical scroll. RTL/LTR page direction per manga. Fit
   to screen or width, zoom, full screen, page thumbnails, preloading, remembered position, original/translated
   toggle, side-by-side compare, keyboard and mouse navigation. Works offline.
-- **Translation**: bubble detection → Japanese OCR → context-aware translation (glossary,
+- **Translation**: bubble detection → OCR (Japanese: manga-ocr; English: TrOCR) → context-aware translation (glossary,
   translation memory, previous lines, optional page images) → text removal (LaMa) → Hebrew
   typesetting with HarfBuzz/FriBidi. Results are cached on disk; reopening a translated page costs nothing.
 - **Providers**: Claude Code CLI (your Claude login, no API key), Anthropic API, OpenAI, Gemini,
@@ -277,8 +277,13 @@ cd src-tauri && cargo run --example suwayomi_managed
 
 ## Known limitations
 
-- OCR is Japanese only (manga-ocr). Korean, Chinese and English need another OCR engine behind
-  the same worker interface. The language selector marks them unavailable.
+- Local OCR covers Japanese (manga-ocr) and English (TrOCR `microsoft/trocr-base-printed`, about 1.3 GB, downloaded
+  with "download missing models"). English OCR reads lettered dialogue well and gives low confidence on sound effects
+  and art; small slips ("ABIT") are left for the translator and the editor. Korean and Chinese pages are read from the
+  page image by the translator, which needs a provider with image input.
+  Measured with Claude Haiku via the CLI, English OCR translates in about the same time and cost as reading from the
+  image (22-32 s, about $0.027 per page). Its gains are text you can edit and re-OCR in the editor, and English
+  translation with text-only providers such as Ollama, fully offline.
 - RAR/CBR archives are not read. Extract them first; the import reports skipped RAR files.
 - Reading order inside a page uses a row heuristic. Complex layouts may need reordering in the editor.
 - Text removal on detailed artwork can leave traces. These pages are flagged "complex background" in the editor.

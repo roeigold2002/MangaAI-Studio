@@ -317,6 +317,7 @@ function EnginePanel({ status }: { status: ReturnType<typeof useLoad<Awaited<Ret
           {h && row(h.raqm, h.raqm ? "עיצוב טקסט עברי (HarfBuzz + FriBidi) זמין" : `libraqm/fribidi חסר: העברית לא תעומד. ${platform === "windows" ? "התקינו מחדש את האפליקציה (fribidi-0.dll חסר)" : "התקן: brew install fribidi"}`)}
           {h && row(h.models.detector, "מודל זיהוי בועות")}
           {h && row(h.models.ocr, "מודל OCR ליפנית (manga-ocr)")}
+          {h && row(h.models.ocr_en, "מודל OCR לאנגלית (TrOCR, כ-1.3GB)")}
           {h && row(h.models.lama, "מודל ניקוי (LaMa)")}
           {s.error && s.installed && <div className="callout bad small">{s.error}</div>}
           {gpuOffered && (
@@ -329,7 +330,7 @@ function EnginePanel({ status }: { status: ReturnType<typeof useLoad<Awaited<Ret
             <button className="btn" disabled={!!busy || !s.uv} onClick={() => run("מתקין… (עלול לקחת כמה דקות)", () => api.installEngine(gpu))}>
               {s.installed ? "התקנה מחדש של סביבת Python" : "התקנת סביבת Python"}
             </button>
-            <button className="btn" disabled={!!busy || !s.installed || (h?.models.detector && h?.models.ocr && h?.models.lama)} onClick={() => run("מוריד מודלים…", api.prepareModels)}>
+            <button className="btn" disabled={!!busy || !s.installed || (h?.models.detector && h?.models.ocr && h?.models.ocr_en && h?.models.lama)} onClick={() => run("מוריד מודלים…", api.prepareModels)}>
               הורדת מודלים חסרים
             </button>
             {!s.uv && <span className="small" style={{ color: "var(--bad)" }}>נדרש uv להתקנה ({platform === "windows" ? "winget install astral-sh.uv" : "brew install uv"})</span>}

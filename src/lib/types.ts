@@ -144,7 +144,7 @@ export interface CleanupResult { chapters_removed: number; downloads_cancelled: 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;
   health: { raqm: boolean; torch: string | null; device?: string; cuda?: boolean; gpu?: string; python: string;
-    models: { detector: boolean; ocr: boolean; lama: boolean; lama_path: string } } | null;
+    models: { detector: boolean; ocr: boolean; ocr_en?: boolean; lama: boolean; lama_path: string } } | null;
   error: string | null;
   /** NVIDIA GPUs reported by the driver (empty on macOS / without one). */
   gpus: string[];

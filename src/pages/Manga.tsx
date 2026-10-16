@@ -396,9 +396,9 @@ function Options({ m, onSaved }: { m: MangaDetail; onSaved: () => void }) {
         <Field label="שפת המקור">
           <select className="select" value={form.source_lang} onChange={(e) => setForm({ ...form, source_lang: e.target.value })}>
             <option value="ja">יפנית</option>
-            <option value="ko" disabled>קוריאנית (OCR עדיין לא נתמך)</option>
-            <option value="zh" disabled>סינית (OCR עדיין לא נתמך)</option>
-            <option value="en" disabled>אנגלית (OCR עדיין לא נתמך)</option>
+            <option value="en">אנגלית</option>
+            <option value="ko">קוריאנית (המתרגם קורא מהתמונה)</option>
+            <option value="zh">סינית (המתרגם קורא מהתמונה)</option>
           </select>
         </Field>
       </div>

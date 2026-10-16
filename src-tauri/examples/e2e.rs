@@ -57,6 +57,12 @@ async fn main() -> anyhow::Result<()> {
             p.max_concurrency = c;
         }
     }
+    // MANGAAI_E2E_IMAGES=0: text only (pages with local OCR need no page image)
+    if std::env::var("MANGAAI_E2E_IMAGES").as_deref() == Ok("0") {
+        for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {
+            p.send_images = false;
+        }
+    }
     s.cloud_notice_accepted = true;
     if let Some(m) = &model {
         for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {

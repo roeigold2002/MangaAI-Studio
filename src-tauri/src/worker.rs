@@ -52,8 +52,9 @@ pub struct StageResult {
 #[async_trait]
 pub trait Vision: Send + Sync {
     async fn health(&self) -> AppResult<Value>;
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis>;
-    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str) -> AppResult<(String, Option<f64>)>;
+    /// `ocr`: language of the local OCR to run ("ja", "en"), or None for detection only.
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: Option<&str>) -> AppResult<Analysis>;
+    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str, lang: &str) -> AppResult<(String, Option<f64>)>;
     async fn clean(&self, image: &Path, out: &Path, regions: Value, method: &str, device: &str) -> AppResult<StageResult>;
     async fn render(&self, clean: &Path, out: &Path, regions: Value, settings: Value) -> AppResult<StageResult>;
     async fn prepare_models(&self) -> AppResult<Value>;
@@ -226,19 +227,19 @@ impl Vision for PythonWorker {
         self.call("health", json!({}), Duration::from_secs(60)).await
     }
 
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis> {
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: Option<&str>) -> AppResult<Analysis> {
         let v = self
             .call(
                 "analyze",
-                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device, "ocr": ocr}),
+                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device, "ocr": ocr.is_some(), "lang": ocr.unwrap_or("ja")}),
                 Duration::from_secs(600),
             )
             .await?;
         Ok(serde_json::from_value(v)?)
     }
 
-    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str) -> AppResult<(String, Option<f64>)> {
-        let v = self.call("ocr_region", json!({"image": image, "box": bbox, "device": device}), Duration::from_secs(120)).await?;
+    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str, lang: &str) -> AppResult<(String, Option<f64>)> {
+        let v = self.call("ocr_region", json!({"image": image, "box": bbox, "device": device, "lang": lang}), Duration::from_secs(120)).await?;
         Ok((v["text"].as_str().unwrap_or_default().to_string(), v["confidence"].as_f64()))
     }
 
@@ -354,16 +355,16 @@ pub mod fake {
         async fn health(&self) -> AppResult<Value> {
             Ok(json!({"raqm": true}))
         }
-        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str, ocr: bool) -> AppResult<Analysis> {
-            self.calls.lock().push(format!("analyze:ocr={ocr}"));
+        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str, ocr: Option<&str>) -> AppResult<Analysis> {
+            self.calls.lock().push(format!("analyze:ocr={}", ocr.unwrap_or("false")));
             let mut regions = self.regions.clone();
-            if !ocr {
+            if ocr.is_none() {
                 regions.iter_mut().for_each(|r| { r.text.clear(); r.confidence = None; });
             }
             Ok(Analysis { version: "a2".into(), width: 100, height: 100, regions })
         }
-        async fn ocr_region(&self, _image: &Path, _b: [i64; 4], _d: &str) -> AppResult<(String, Option<f64>)> {
-            self.calls.lock().push("ocr_region".into());
+        async fn ocr_region(&self, _image: &Path, _b: [i64; 4], _d: &str, lang: &str) -> AppResult<(String, Option<f64>)> {
+            self.calls.lock().push(format!("ocr_region:{lang}"));
             Ok(("再OCR".into(), Some(0.9)))
         }
         async fn clean(&self, image: &Path, out: &Path, _r: Value, _m: &str, _d: &str) -> AppResult<StageResult> {

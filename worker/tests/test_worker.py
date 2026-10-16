@@ -239,3 +239,33 @@ def test_tight_text_box_in_round_bubble_on_dark_page(tmp_path):
     assert arr[110:185, 140:261].min() > 200, "text erased"
     assert arr[45, 70] < 50 and arr[255, 330] < 50, "dark corners outside the bubble untouched"
     assert arr[150, 61:66].min() < 80, "bubble outline kept"
+
+
+def test_english_lines_are_joined_and_hyphens_mended():
+    from mangaai_worker.analyze import join_en_lines
+
+    assert join_en_lines(["IF YOU'RE", "GOING FOR", "A WALK?"]) == "IF YOU'RE GOING FOR A WALK?"
+    assert join_en_lines(["IT'S IM-", "POSSIBLE!"]) == "IT'S IMPOSSIBLE!"
+    assert join_en_lines(["WAIT --", "WHAT?"]) == "WAIT -- WHAT?", "dashes are not hyphenation"
+    assert join_en_lines(["", " OK ", ""]) == "OK"
+
+
+needs_en_ocr = pytest.mark.skipif(not __import__("mangaai_worker.models", fromlist=["x"]).hf_cached(
+    "microsoft/trocr-base-printed"), reason="English OCR model not downloaded")
+
+
+@needs_en_ocr
+def test_english_ocr_reads_a_lettered_bubble():
+    from PIL import ImageFont
+
+    from mangaai_worker.analyze import en_ocr_box
+
+    im = Image.new("RGB", (420, 200), "white")
+    d = ImageDraw.Draw(im)
+    f = ImageFont.truetype(str(FONTS / "VarelaRound-Regular.ttf"), 30)
+    for i, line in enumerate(["I'M GONNA BE", "WALKING TOWARD", "THE STATION..."]):
+        w = d.textlength(line, font=f)
+        d.text(((420 - w) / 2, 30 + i * 45), line, font=f, fill="black")
+    text, conf = en_ocr_box(im, [60, 25, 360, 170], "cpu")
+    assert text.replace(" ", "") == "I'MGONNABEWALKINGTOWARDTHESTATION...", text
+    assert conf is not None and conf > 0.5
