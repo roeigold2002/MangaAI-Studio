@@ -22,8 +22,6 @@ use crate::settings::ProviderConfig;
 pub struct ImagePart {
     pub mime: String,
     pub data: Vec<u8>,
-    /// File on disk (used by the Claude CLI adapter, which reads files itself).
-    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +33,9 @@ pub struct ProviderRequest {
     pub max_output_tokens: u32,
     /// low | medium | high (mapped per provider where supported)
     pub effort: String,
+    /// Cap on thinking tokens for providers that take a fixed budget (Claude CLI on
+    /// budget-thinking models); adaptive-thinking models are steered by `effort` only.
+    pub thinking_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

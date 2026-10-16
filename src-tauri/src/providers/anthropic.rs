@@ -39,7 +39,9 @@ impl Anthropic {
         let mut body = json!({
             "model": self.cfg.model,
             "max_tokens": req.max_output_tokens.max(1024),
-            "system": req.system,
+            // The system prompt is identical for every page of a chapter: a cache breakpoint
+            // after it turns its tokens into cheap cache reads on all but the first request.
+            "system": [{"type": "text", "text": req.system, "cache_control": {"type": "ephemeral"}}],
             "messages": [{"role": "user", "content": content}],
             "output_config": {
                 "effort": req.effort,
@@ -116,10 +118,11 @@ mod tests {
         ProviderRequest {
             system: "sys".into(),
             user: "hello".into(),
-            images: vec![ImagePart { mime: "image/png".into(), data: vec![1, 2, 3], path: None }],
+            images: vec![ImagePart { mime: "image/png".into(), data: vec![1, 2, 3] }],
             schema: json!({"type": "object"}),
             max_output_tokens: 4000,
             effort: "medium".into(),
+            thinking_budget: None,
         }
     }
 
@@ -132,6 +135,8 @@ mod tests {
         let a = Anthropic::new(cfg(""), "k".into(), reqwest::Client::new());
         let b = a.body(&req());
         assert_eq!(b["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(b["system"][0]["text"], "sys");
+        assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(b["messages"][0]["content"][0]["source"]["data"], "AQID");
         assert_eq!(b["messages"][0]["content"][1]["text"], "hello");
         assert_eq!(b["fallbacks"], "default");

@@ -2,11 +2,11 @@
 //! Claude login, so no API key is stored here. Requests still go to Anthropic.
 
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
 
@@ -157,22 +157,7 @@ impl TranslationProvider for ClaudeCli {
         let bin = find_claude(&self.cfg.endpoint).ok_or_else(|| {
             ProviderError::new(ErrorKind::Unavailable, "Claude Code CLI not found. Install it or set its path in settings.")
         })?;
-        // Images are passed as files the CLI may read; nothing else is accessible.
         let workdir = tempfile::tempdir().map_err(|e| ProviderError::new(ErrorKind::Unavailable, e.to_string()))?;
-        let mut user = req.user.clone();
-        let mut image_paths = vec![];
-        for (i, im) in req.images.iter().enumerate() {
-            let ext = if im.mime.contains("png") { "png" } else if im.mime.contains("webp") { "webp" } else { "jpg" };
-            let p = workdir.path().join(format!("page_{}.{ext}", i + 1));
-            std::fs::write(&p, &im.data).map_err(|e| ProviderError::new(ErrorKind::Unavailable, e.to_string()))?;
-            image_paths.push(p);
-        }
-        if !image_paths.is_empty() {
-            user.push_str("\n\nPage images (read each one with the Read tool before answering, in this order):\n");
-            for p in &image_paths {
-                user.push_str(&format!("- {}\n", p.display()));
-            }
-        }
         let schema = serde_json::to_string(&req.schema).unwrap_or_default();
         // The system prompt is long and multi-line: pass it as a file, not an argument
         // (Windows command lines are length-limited and quoting newlines is unreliable).
@@ -181,13 +166,18 @@ impl TranslationProvider for ClaudeCli {
         let (program, prefix) = launcher(&bin)?;
         let mut cmd = tokio::process::Command::new(&program);
         crate::platform::no_window(&mut cmd);
+        // Page images go inline in one stream-json user message, so the model sees them in
+        // its first turn: no tools at all (no Read round trips, nothing on disk readable).
         cmd.args(&prefix)
             .arg("-p")
-            .args(["--output-format", "json"])
+            .args(["--input-format", "stream-json"])
+            .args(["--output-format", "stream-json"])
+            .arg("--verbose")
             .arg("--no-session-persistence")
             .args(["--setting-sources", ""])
             .arg("--strict-mcp-config")
             .arg("--disable-slash-commands")
+            .args(["--tools", ""])
             .arg("--system-prompt-file")
             .arg(&system_file)
             .args(["--json-schema", &schema])
@@ -195,34 +185,111 @@ impl TranslationProvider for ClaudeCli {
         if !self.cfg.model.trim().is_empty() {
             cmd.args(["--model", self.cfg.model.trim()]);
         }
-        if image_paths.is_empty() {
-            cmd.args(["--tools", ""]);
-        } else {
-            cmd.args(["--tools", "Read"]).args(["--allowedTools", "Read"]);
-            cmd.arg("--add-dir").arg(workdir.path());
+        // Budget-thinking models (the `haiku` alias) otherwise think for minutes per page;
+        // adaptive-thinking models ignore this and follow --effort.
+        if let Some(b) = req.thinking_budget {
+            cmd.env("MAX_THINKING_TOKENS", b.to_string());
         }
         cmd.current_dir(workdir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        let message = user_message_line(req);
+        let started = std::time::Instant::now();
         let mut child = cmd
             .spawn()
             .map_err(|e| ProviderError::new(ErrorKind::Unavailable, format!("could not start Claude CLI: {e}")))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(user.as_bytes()).await.map_err(|e| ProviderError::new(ErrorKind::Unavailable, e.to_string()))?;
-        }
+        let mut stdin = child.stdin.take();
+        // write in its own task: the CLI may print before it has read all of stdin
+        let writer = tokio::spawn(async move {
+            if let Some(stdin) = stdin.as_mut() {
+                stdin.write_all(message.as_bytes()).await?;
+                stdin.shutdown().await?;
+            }
+            drop(stdin);
+            Ok::<_, std::io::Error>(())
+        });
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let read = async {
+            let mut events = vec![];
+            let mut result = None;
+            if let Some(out) = stdout {
+                let mut lines = BufReader::new(out).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let at = started.elapsed().as_secs_f32();
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                    if v["subtype"] != "thinking_tokens" {
+                        events.push(format!("{at:.2}s {}", event_label(&v)));
+                    }
+                    if v["type"] == "result" {
+                        result = Some(line);
+                    }
+                }
+            }
+            let mut err = String::new();
+            if let Some(mut e) = stderr {
+                let _ = e.read_to_string(&mut err).await;
+            }
+            let _ = child.wait().await;
+            (result, events, err)
+        };
         let timeout = Duration::from_secs(self.cfg.timeout_secs.max(30));
-        let out = tokio::time::timeout(timeout, child.wait_with_output())
+        let (result, events, err) = tokio::time::timeout(timeout, read)
             .await
-            .map_err(|_| ProviderError::new(ErrorKind::Timeout, "Claude CLI did not finish in time"))?
-            .map_err(|e| ProviderError::new(ErrorKind::Unavailable, e.to_string()))?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        if stdout.trim().is_empty() {
-            let err: String = String::from_utf8_lossy(&out.stderr).chars().take(300).collect();
+            .map_err(|_| ProviderError::new(ErrorKind::Timeout, "Claude CLI did not finish in time"))?;
+        let _ = writer.await;
+        tracing::debug!(model = %self.cfg.model, secs = started.elapsed().as_secs_f32(), "Claude CLI timeline: {}", events.join(" | "));
+        let Some(result) = result else {
+            let err: String = err.chars().take(300).collect();
             return Err(ProviderError::new(ErrorKind::Unavailable, format!("Claude CLI produced no output: {err}")));
+        };
+        Self::parse(&result)
+    }
+}
+
+/// One stream-json user message: the page images (in order), then the request text.
+fn user_message_line(req: &ProviderRequest) -> String {
+    let mut content: Vec<Value> = req
+        .images
+        .iter()
+        .map(|im| json!({"type": "image", "source": {"type": "base64", "media_type": im.mime, "data": b64(&im.data)}}))
+        .collect();
+    let mut text = req.user.clone();
+    if req.thinking_budget.is_some() {
+        // The budget is a soft cap: about one call in four still thought for ~11k tokens.
+        text.push_str("\n\nKeep your reasoning brief: a short plan is enough, then answer.");
+    }
+    content.push(json!({"type": "text", "text": text}));
+    let mut line = json!({"type": "user", "message": {"role": "user", "content": content}}).to_string();
+    line.push('\n');
+    line
+}
+
+/// Short description of one stream-json event, for the timing log.
+fn event_label(v: &Value) -> String {
+    match v["type"].as_str().unwrap_or("?") {
+        "assistant" => {
+            let blocks = v["message"]["content"].as_array().map(|b| {
+                b.iter()
+                    .map(|b| match b["type"].as_str() {
+                        Some("tool_use") => format!("tool_use:{}", b["name"].as_str().unwrap_or("")),
+                        Some(t) => t.to_string(),
+                        None => "?".into(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
+            format!("assistant[{}]", blocks.unwrap_or_default())
         }
-        Self::parse(&stdout)
+        "result" => format!(
+            "result model={:?} turns={} api_ms={} out={} thinking={} cost={}",
+            v["modelUsage"].as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+            v["num_turns"], v["duration_api_ms"], v["usage"]["output_tokens"], v["usage"]["output_tokens_details"]["thinking_tokens"], v["total_cost_usd"]
+        ),
+        "system" => format!("system:{}", v["subtype"].as_str().unwrap_or("")),
+        t => t.to_string(),
     }
 }
 
@@ -266,6 +333,28 @@ mod tests {
         same(&shim_target(old, d.path()).unwrap(), &js);
         assert!(resolve_shim(&js).is_none(), "not a shim");
         assert!(launcher(&shim).is_err(), "batch files are never started directly");
+    }
+
+    #[test]
+    fn images_go_inline_before_the_text() {
+        let req = ProviderRequest {
+            system: "sys".into(),
+            user: "translate".into(),
+            images: vec![ImagePart { mime: "image/jpeg".into(), data: vec![1, 2, 3] }, ImagePart { mime: "image/png".into(), data: vec![4] }],
+            schema: json!({}),
+            max_output_tokens: 100,
+            effort: "medium".into(),
+            thinking_budget: None,
+        };
+        let line = user_message_line(&req);
+        assert!(line.ends_with('\n') && !line.trim_end().contains('\n'), "one JSON line");
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        let c = &v["message"]["content"];
+        assert_eq!(c[0]["source"]["data"], "AQID");
+        assert_eq!(c[1]["source"]["media_type"], "image/png");
+        assert_eq!(c[2]["text"], "translate");
+        assert!(event_label(&json!({"type": "result", "num_turns": 2})).starts_with("result"));
     }
 
     #[test]

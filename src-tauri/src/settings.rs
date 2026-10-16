@@ -93,7 +93,8 @@ pub fn default_providers() -> Vec<ProviderConfig> {
             kind: "claude_cli".into(),
             label: "Claude Code (המנוי שלך)".into(),
             model: "opus".into(),
-            max_concurrency: 1,
+            // two page batches translated at once (each is its own CLI process)
+            max_concurrency: 2,
             timeout_secs: 300,
             ..Default::default()
         },

@@ -133,6 +133,7 @@ mod tests {
             schema: json!({"type":"object"}),
             max_output_tokens: 10,
             effort: "low".into(),
+            thinking_budget: None,
         };
         assert_eq!(g.body(&req)["generationConfig"]["responseMimeType"], "application/json");
     }

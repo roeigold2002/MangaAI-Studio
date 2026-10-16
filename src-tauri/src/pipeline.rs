@@ -267,6 +267,13 @@ pub struct BatchOutcome {
     pub provider_calls: u32,
 }
 
+/// Pages of a batch after stage 1: the ones ready to translate, and the analysis failures.
+#[derive(Debug, Default)]
+pub struct Analyzed {
+    pub ready: Vec<PageCtx>,
+    pub outcome: BatchOutcome,
+}
+
 impl Engine {
     pub fn new(db: Db, paths: Paths, vision: Arc<dyn Vision>, events: Arc<dyn EventSink>) -> Self {
         Self { db, paths, vision, events }
@@ -402,11 +409,14 @@ impl Engine {
             })
             .collect();
         let limit = s.translation.context_lines as i64;
+        // Earlier pages' lines, translated or not: batches run concurrently, so an earlier
+        // page may still be in flight; its OCR text alone still carries the dialogue.
         let (lines, summaries): (Vec<String>, Vec<String>) = self.db.with(|c| {
             let mut st = c.prepare(
-                "SELECT coalesce(r.speaker, ''), coalesce(nullif(r.source_text, ''), r.ocr_text), r.translation
+                "SELECT coalesce(r.speaker, ''), coalesce(nullif(r.source_text, ''), r.ocr_text), coalesce(r.translation, '')
                  FROM region r JOIN page p ON p.id = r.page_id
-                 WHERE p.chapter_id = ?1 AND p.idx < ?2 AND r.translation IS NOT NULL AND r.translation != ''
+                 WHERE p.chapter_id = ?1 AND p.idx < ?2 AND r.skip = 0
+                   AND (coalesce(r.translation, '') != '' OR coalesce(nullif(r.source_text, ''), r.ocr_text, '') != '')
                  ORDER BY p.idx DESC, r.order_idx DESC LIMIT ?3",
             )?;
             let mut lines: Vec<String> = st
@@ -414,7 +424,8 @@ impl Engine {
                     let sp: String = r.get(0)?;
                     let src: String = r.get(1)?;
                     let tr: String = r.get(2)?;
-                    Ok(if sp.is_empty() { format!("{src} → {tr}") } else { format!("[{sp}] {src} → {tr}") })
+                    let line = if tr.is_empty() { src } else { format!("{src} → {tr}") };
+                    Ok(if sp.is_empty() { line } else { format!("[{sp}] {line}") })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             lines.reverse();
@@ -447,7 +458,7 @@ impl Engine {
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
             .encode_image(&img.to_rgb8())
             .map_err(|e| AppError::new("bad_image", e.to_string()))?;
-        Ok(ImagePart { mime: "image/jpeg".into(), data: out.into_inner(), path: Some(src) })
+        Ok(ImagePart { mime: "image/jpeg".into(), data: out.into_inner() })
     }
 
     /// Translate a batch of (already analyzed) pages. Pages whose key is unchanged are skipped.
@@ -765,6 +776,13 @@ impl Engine {
         job_id: Option<i64>,
         force: bool,
     ) -> AppResult<BatchOutcome> {
+        let analyzed = self.analyze_pages(pages, s).await?;
+        self.translate_and_render(analyzed, s, cfg, provider, job_id, force).await
+    }
+
+    /// Stage 1 for a batch. Pages that fail are marked failed and left out; a missing or
+    /// broken engine aborts the batch.
+    pub async fn analyze_pages(&self, pages: &[PageCtx], s: &AppSettings) -> AppResult<Analyzed> {
         let mut ready = vec![];
         let mut outcome = BatchOutcome::default();
         for p in pages {
@@ -780,6 +798,20 @@ impl Engine {
                 }
             }
         }
+        Ok(Analyzed { ready, outcome })
+    }
+
+    /// Stages 2-4 for the pages of a batch that `analyze_pages` returned.
+    pub async fn translate_and_render(
+        &self,
+        analyzed: Analyzed,
+        s: &AppSettings,
+        cfg: &ProviderConfig,
+        provider: Arc<dyn TranslationProvider>,
+        job_id: Option<i64>,
+        force: bool,
+    ) -> AppResult<BatchOutcome> {
+        let Analyzed { ready, mut outcome } = analyzed;
         let t = self.translate(&ready, s, cfg, provider, job_id, force).await;
         let t = match t {
             Ok(t) => t,

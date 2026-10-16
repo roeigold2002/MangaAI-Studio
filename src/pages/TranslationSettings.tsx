@@ -235,7 +235,7 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
         <Field label="ניסיונות חוזרים">
           <input className="input" type="number" min={0} max={8} value={p.max_retries} onChange={(e) => onChange({ max_retries: Number(e.target.value) })} />
         </Field>
-        <Field label="בקשות במקביל" hint="מספר העמודים שעובדים עליהם בכל רגע מוגבל גם על ידי המנוע המקומי">
+        <Field label="בקשות במקביל" hint="כמה בקשות תרגום נשלחות בבת אחת; בינתיים המנוע המקומי מכין את העמודים הבאים">
           <input className="input" type="number" min={1} max={8} value={p.max_concurrency} onChange={(e) => onChange({ max_concurrency: Number(e.target.value) })} />
         </Field>
         {!info?.local && p.kind !== "claude_cli" && (

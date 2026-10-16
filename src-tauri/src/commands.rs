@@ -261,6 +261,7 @@ pub async fn test_provider(st: State<'_, AppState>, provider_id: String) -> R<Va
         schema: json!({"type":"object","additionalProperties":false,"required":["translation"],"properties":{"translation":{"type":"string"}}}),
         max_output_tokens: 1024,
         effort: "low".into(),
+        thinking_budget: Some(1024),
     };
     let started = std::time::Instant::now();
     let r = p.complete(&req).await.map_err(|e| AppError::new("provider", format!("{:?}: {}", e.kind, e.message)))?;
