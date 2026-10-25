@@ -128,7 +128,7 @@ pub fn update_region(engine: &Engine, region_id: i64, e: RegionEdit) -> AppResul
 pub async fn add_region(engine: &Engine, page_id: i64, bbox: [i64; 4], s: &AppSettings) -> AppResult<RegionRow> {
     let p = load_page(&engine.db, page_id, true)?;
     let src = engine.source_file(&p)?;
-    let (text, conf) = engine.vision.ocr_region(&src, bbox, &s.ocr.device).await?;
+    let (text, conf) = engine.vision.ocr_region(&src, bbox, &s.ocr.device, p.ocr_lang().unwrap_or("ja")).await?;
     let existing = load_regions(&engine.db, page_id)?;
     let n = existing.iter().filter_map(|r| r.rid.trim_start_matches('r').parse::<i64>().ok()).max().unwrap_or(0) + 1;
     let order = existing.iter().map(|r| r.order_idx).max().unwrap_or(0) + 1;
@@ -172,7 +172,7 @@ pub async fn retry_region_ocr(engine: &Engine, region_id: i64, s: &AppSettings) 
     let r = region(engine, region_id)?;
     let p = load_page(&engine.db, r.page_id, true)?;
     let src = engine.source_file(&p)?;
-    let (text, conf) = engine.vision.ocr_region(&src, r.bbox, &s.ocr.device).await?;
+    let (text, conf) = engine.vision.ocr_region(&src, r.bbox, &s.ocr.device, p.ocr_lang().unwrap_or("ja")).await?;
     engine.db.with(|c| {
         c.execute(
             "UPDATE region SET ocr_text = ?1, ocr_confidence = ?2, source_text = NULL, updated_at = ?3 WHERE id = ?4",
@@ -309,9 +309,9 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn non_japanese_pages_are_read_from_the_image() {
+    async fn pages_without_local_ocr_are_read_from_the_image() {
         let (_d, engine, fake, _ch) = setup(&["ignored", "ignored"]);
-        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'en'", [])?; Ok(()) }).unwrap();
+        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'ko'", [])?; Ok(()) }).unwrap();
         let s = AppSettings::default();
         let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
         let p = load_page(&engine.db, page_id, true).unwrap();
@@ -323,7 +323,7 @@ pub(crate) mod tests {
         let mut c = cfg();
         c.send_images = true;
         engine.process_batch(&[p], &s, &c, mock.clone(), None, false).await.unwrap();
-        assert!(fake.calls.lock().iter().any(|x| x == "analyze:ocr=false"), "no Japanese OCR for English pages");
+        assert!(fake.calls.lock().iter().any(|x| x == "analyze:ocr=false"), "no local OCR for Korean pages");
         let req = mock.requests.lock()[0].clone();
         assert!(req.user.contains("no OCR: read the text in the page image at x"));
         assert_eq!(req.images.len(), 1, "the page image is required");
@@ -340,7 +340,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn reading_from_image_without_images_fails_honestly() {
         let (_d, engine, _fake, _ch) = setup(&["x"]);
-        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'en'", [])?; Ok(()) }).unwrap();
+        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'ko'", [])?; Ok(()) }).unwrap();
         let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
         let p = load_page(&engine.db, page_id, true).unwrap();
         let mock = MockProvider::new(vec![]);
@@ -352,6 +352,28 @@ pub(crate) mod tests {
         let st = page_state(&engine.db, page_id).unwrap();
         assert_eq!(st.status, "failed");
         assert!(st.error.unwrap().contains("send page images"));
+    }
+
+    #[tokio::test]
+    async fn english_pages_use_local_english_ocr_without_images() {
+        let (_d, engine, fake, _ch) = setup(&["WHERE AM I?", "HEY!"]);
+        engine.db.with(|c| { c.execute("UPDATE manga SET source_lang = 'en'", [])?; Ok(()) }).unwrap();
+        let page_id: i64 = engine.db.with(|c| Ok(c.query_row("SELECT id FROM page WHERE idx = 0", [], |r| r.get(0))?)).unwrap();
+        let p = load_page(&engine.db, page_id, true).unwrap();
+        let mock = MockProvider::new(vec![tr_json(&[("p1r1", "איפה אני?"), ("p1r2", "היי!")])]);
+        let mut c = cfg();
+        c.send_images = false; // OCR text is enough: no page image needed
+        engine.process_batch(&[p], &AppSettings::default(), &c, mock.clone(), None, false).await.unwrap();
+        assert!(fake.calls.lock().iter().any(|x| x == "analyze:ocr=en"), "English OCR requested");
+        let req = mock.requests.lock()[0].clone();
+        assert!(req.user.contains("WHERE AM I?"), "the OCR text is sent");
+        assert!(!req.user.contains("no OCR"), "not the read-from-image path");
+        assert!(req.images.is_empty());
+        assert_eq!(page_state(&engine.db, page_id).unwrap().status, "done");
+        // re-OCR of one region in the editor uses the English engine too
+        let r = load_regions(&engine.db, page_id).unwrap()[0].clone();
+        retry_region_ocr(&engine, r.id, &AppSettings::default()).await.unwrap();
+        assert!(fake.calls.lock().iter().any(|x| x == "ocr_region:en"));
     }
 
     #[tokio::test]

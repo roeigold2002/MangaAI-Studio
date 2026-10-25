@@ -9,7 +9,7 @@ export default function DownloadsPage() {
   const { data, error, reload } = useLoad(() => api.downloads(), []);
   const refresh = useThrottled(reload, 400);
   useEvent("download-updated", refresh);
-  const finished = (data ?? []).filter((d) => d.status === "done" || d.status === "cancelled").length;
+  const finished = (data ?? []).filter((d) => d.status === "done" || d.status === "cancelled" || d.status === "skipped").length;
 
   return (
     <div className="page">
@@ -42,8 +42,8 @@ export default function DownloadsPage() {
                 </div>
                 {d.error && <span className="small" style={{ color: "var(--bad)" }} dir="auto">{d.error}</span>}
               </div>
-              {(d.status === "failed" || d.status === "cancelled") && (
-                <button className="btn sm" onClick={() => api.downloadAction(d.id, "retry").then(reload).catch(toastError)}><RotateCcw size={14} /> ניסיון חוזר</button>
+              {(d.status === "failed" || d.status === "cancelled" || d.status === "skipped") && (
+                <button className="btn sm" onClick={() => api.downloadAction(d.id, "retry").then(reload).catch(toastError)}><RotateCcw size={14} /> {d.status === "skipped" ? "להוריד בכל זאת" : "ניסיון חוזר"}</button>
               )}
               {(d.status === "queued" || d.status === "running") && (
                 <button className="btn ghost sm" onClick={() => api.downloadAction(d.id, "cancel").then(reload).catch(toastError)}><X size={14} /> ביטול</button>

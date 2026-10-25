@@ -175,7 +175,7 @@ impl Runtime {
             let f = std::fs::File::open(&part)?;
             zip::ZipArchive::new(f)?.extract(&staging)?;
         } else {
-            let st = tokio::process::Command::new("tar").arg("-xzf").arg(&part).arg("-C").arg(&staging).status().await?;
+            let st = crate::platform::no_window(&mut tokio::process::Command::new("tar")).arg("-xzf").arg(&part).arg("-C").arg(&staging).status().await?;
             if !st.success() {
                 return Err(AppError::new("extract", "could not unpack the Suwayomi archive"));
             }
@@ -205,6 +205,7 @@ impl Runtime {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.log_path)?;
         let prop = |k: &str, v: &str| format!("-Dsuwayomi.tachidesk.config.server.{k}={v}");
         let mut cmd = tokio::process::Command::new(java);
+        crate::platform::no_window(&mut cmd);
         cmd.arg(prop("rootDir", &self.data_dir().to_string_lossy()))
             .arg(prop("ip", "127.0.0.1"))
             .arg(prop("port", &port.to_string()))
@@ -220,6 +221,7 @@ impl Runtime {
             .stderr(Stdio::from(log))
             .kill_on_drop(true);
         let child = cmd.spawn().map_err(|e| AppError::new("start_failed", format!("could not start Suwayomi: {e}")))?;
+        crate::platform::adopt(&child);
         *g = Some(child);
         Ok(())
     }

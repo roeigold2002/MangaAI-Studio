@@ -48,7 +48,7 @@ export interface ImportReport {
 
 export interface ProviderConfig {
   id: string; kind: string; label: string; model: string; endpoint: string; max_concurrency: number; timeout_secs: number;
-  max_retries: number; send_images: boolean; price_input_per_mtok: number; price_output_per_mtok: number; max_output_tokens: number;
+  max_retries: number; send_images: boolean; price_input_per_mtok: number; price_output_per_mtok: number; max_output_tokens: number; gpu_layers: number;
 }
 
 export interface Settings {
@@ -62,9 +62,10 @@ export interface Settings {
     stroke_px: number; inpaint: string };
   ocr: { detector_threshold: number; device: string };
   sources: { suwayomi_enabled: boolean; suwayomi_url: string; suwayomi_user: string; download_concurrency: number;
-    managed: boolean; managed_port: number; languages: string[] };
+    managed: boolean; managed_port: number; languages: string[]; default_extensions: string[];
+    check_new_chapters_hours: number; auto_download_new: boolean };
   cloud_notice_accepted: boolean;
-  onboarding_done: boolean;
+  onboarding_done: boolean; sync: { folder: string; last_sync_at: string | null };
 }
 
 export interface Job {
@@ -81,7 +82,7 @@ export interface Estimate {
 export interface Download {
   id: number; source_id: string; manga_ref: string; manga_title: string; chapter_ref: string; chapter_title: string;
   chapter_number: number | null; manga_id: number | null; chapter_id: number | null; status: string; progress: number;
-  total: number; error: string | null; updated_at: string;
+  total: number; error: string | null; updated_at: string; scanlator: string | null; auto: boolean;
 }
 
 export interface RecentTranslated {
@@ -130,13 +131,36 @@ export interface RemoteChapter {
 }
 export interface RemoteDetail {
   manga: RemoteManga; chapters: RemoteChapter[]; downloads: Record<string, string>; local_chapters: Record<string, number>; local_manga_id: number | null;
+  preferred_scanlator: string | null;
 }
+/** What a bulk download would queue: one version per chapter. */
+export interface DownloadPlan { chapters: number; duplicates: number; placeholders: number; already: number; preferred: string | null }
+export interface CleanupEntry {
+  chapter_id: number | null; download_id: number | null; title: string; number: number | null; scanlator: string | null;
+  pages: number | null; status: string; reason: "duplicate" | "placeholder"; bytes: number;
+}
+export interface CleanupPlan { manga_id: number; remove: CleanupEntry[]; kept: number; preferred: string | null; bytes: number }
+export interface CleanupResult { chapters_removed: number; downloads_cancelled: number; bytes_freed: number }
+
+export interface SetupNeeds { engine: boolean; models: boolean; sources: boolean; gpu_offered: boolean; gpu_name: string | null; cuda: boolean }
+export interface SetupStep { step: "engine" | "models" | "sources"; status: "running" | "done" | "skipped" | "failed"; detail: string }
+export interface MergeReport {
+  series_added: string[]; series_elsewhere: string[]; chapters_updated: number; glossary_updated: number;
+  memory_added: number; favorites_changed: number;
+}
+export interface BackupReport { path: string; bytes: number; files: number }
+export interface NewChapters { manga_id: number; title: string; chapters: string[]; queued: boolean }
+export interface CheckReport { checked: number; failed: string[]; new: NewChapters[] }
 
 export interface EngineStatus {
   installed: boolean; python: string; worker_dir: string; models_dir: string; uv: string | null;
-  health: { raqm: boolean; torch: string | null; device?: string; python: string;
-    models: { detector: boolean; ocr: boolean; lama: boolean; lama_path: string } } | null;
+  health: { raqm: boolean; torch: string | null; device?: string; cuda?: boolean; gpu?: string; python: string;
+    models: { detector: boolean; ocr: boolean; ocr_en?: boolean; lama: boolean; lama_path: string } } | null;
   error: string | null;
+  /** NVIDIA GPUs reported by the driver (empty on macOS / without one). */
+  gpus: string[];
+  /** This platform offers the pinned NVIDIA build of PyTorch (Windows x64). */
+  cuda_build: boolean;
 }
 
 export interface SearchEntry { source_id: string; source_name: string; lang: string; manga: RemoteManga }

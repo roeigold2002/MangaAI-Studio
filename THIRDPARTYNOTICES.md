@@ -19,6 +19,21 @@ installed Python packages on 2026-10-12. Re-check after changing dependencies.
 
 The OFL allows bundling. The fonts are not sold separately and are not renamed.
 
+### FriBiDi (Windows builds only: `native/fribidi-0.dll`)
+GNU FriBiDi 1.0.17, LGPL-2.1-or-later (`native/COPYING-fribidi.txt`), github.com/fribidi/fribidi.
+Built unmodified from the release tarball by `scripts/build-fribidi.ps1` (SHA-256 checked) and shipped
+as a separate DLL that Pillow loads at run time, so it can be replaced with any compatible build.
+Pillow's Windows wheels include HarfBuzz and libraqm but leave FriBiDi to the application.
+
+### uv (Windows builds only: `native/uv.exe`)
+uv 0.12.10 by Astral, MIT OR Apache-2.0, github.com/astral-sh/uv. The official release binary, unmodified
+(`scripts/fetch-uv.ps1` checks its SHA-256); it creates the AI engine's Python environment from `worker/uv.lock`.
+
+### PyTorch NVIDIA build (Windows, optional)
+`worker/requirements-cuda-win.txt` pins torch 2.14.1+cu130 (BSD-3-Clause; bundles NVIDIA CUDA runtime
+libraries under the NVIDIA CUDA EULA). Downloaded from download.pytorch.org only when the user enables
+"NVIDIA GPU" while installing the AI engine; it is never bundled with the app.
+
 ### Rust crates (552 in the dependency tree)
 Most are MIT and/or Apache-2.0. Others:
 - **MPL-2.0** (file-level copyleft; used unmodified; source at crates.io): `cssparser`, `cssparser-macros`, `selectors`, `dtoa-short` (via Tauri/wry), `option-ext`.
@@ -27,7 +42,7 @@ Most are MIT and/or Apache-2.0. Others:
 - `r-efi` (MIT OR Apache-2.0 OR LGPL-2.1+): used under MIT/Apache.
 - SQLite (via `rusqlite` bundled): public domain.
 
-Key direct dependencies: tauri, tauri-plugin-dialog, tauri-plugin-opener (MIT/Apache-2.0), rusqlite (MIT),
+Key direct dependencies: tauri, tauri-plugin-dialog, tauri-plugin-opener, tauri-plugin-single-instance, windows-sys (MIT/Apache-2.0), rusqlite (MIT),
 tokio (MIT), reqwest (MIT/Apache-2.0), serde (MIT/Apache-2.0), zip (MIT), image (MIT/Apache-2.0),
 keyring (MIT/Apache-2.0), sha2 (MIT/Apache-2.0), tracing (MIT).
 

@@ -52,14 +52,15 @@ pub struct StageResult {
 #[async_trait]
 pub trait Vision: Send + Sync {
     async fn health(&self) -> AppResult<Value>;
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis>;
-    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str) -> AppResult<(String, Option<f64>)>;
+    /// `ocr`: language of the local OCR to run ("ja", "en"), or None for detection only.
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: Option<&str>) -> AppResult<Analysis>;
+    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str, lang: &str) -> AppResult<(String, Option<f64>)>;
     async fn clean(&self, image: &Path, out: &Path, regions: Value, method: &str, device: &str) -> AppResult<StageResult>;
     async fn render(&self, clean: &Path, out: &Path, regions: Value, settings: Value) -> AppResult<StageResult>;
     async fn prepare_models(&self) -> AppResult<Value>;
     /// Version strings that are part of cache keys.
     fn versions(&self) -> (String, String, String) {
-        ("a2".into(), "i2".into(), "r1".into())
+        ("a2".into(), "i3".into(), "r2".into())
     }
 }
 
@@ -70,6 +71,8 @@ pub struct WorkerConfig {
     pub models_dir: PathBuf,
     pub fonts_dir: PathBuf,
     pub log_path: PathBuf,
+    /// Folder with native libraries the worker loads at run time (fribidi-0.dll on Windows).
+    pub native_dir: Option<PathBuf>,
 }
 
 struct Proc {
@@ -102,6 +105,7 @@ impl PythonWorker {
         }
         let log = std::fs::OpenOptions::new().create(true).append(true).open(&self.cfg.log_path)?;
         let mut cmd = tokio::process::Command::new(&self.cfg.python);
+        crate::platform::no_window(&mut cmd);
         cmd.arg("-m")
             .arg("mangaai_worker")
             .current_dir(&self.cfg.worker_dir)
@@ -110,17 +114,28 @@ impl PythonWorker {
             .env("MANGAAI_MODELS_DIR", &self.cfg.models_dir)
             .env("TOKENIZERS_PARALLELISM", "false")
             .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-            // Pillow loads libraqm/fribidi dynamically; GUI apps don't see Homebrew's lib dir.
-            .env("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib")
+            // The protocol is UTF-8 on every platform (Windows defaults to the ANSI code page).
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8")
+            // Windows without Developer Mode has no symlinks; the cache works, the warning is noise.
+            .env("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(log))
             .kill_on_drop(true);
+        if cfg!(target_os = "macos") {
+            // Pillow loads libraqm/fribidi dynamically; GUI apps don't see Homebrew's lib dir.
+            cmd.env("DYLD_FALLBACK_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib");
+        }
+        if let Some(d) = &self.cfg.native_dir {
+            cmd.env("MANGAAI_NATIVE_DIR", d);
+        }
         if !allow_network {
             // No hidden downloads: models load from the local cache only.
             cmd.env("HF_HUB_OFFLINE", "1").env("TRANSFORMERS_OFFLINE", "1");
         }
         let mut child = cmd.spawn().map_err(|e| AppError::new("engine_start", format!("could not start the AI engine: {e}")))?;
+        crate::platform::adopt(&child);
         let stdin = child.stdin.take().ok_or_else(|| AppError::new("engine_start", "no stdin"))?;
         let stdout = BufReader::new(child.stdout.take().ok_or_else(|| AppError::new("engine_start", "no stdout"))?);
         Ok(Proc { child, stdin, stdout })
@@ -212,19 +227,19 @@ impl Vision for PythonWorker {
         self.call("health", json!({}), Duration::from_secs(60)).await
     }
 
-    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: bool) -> AppResult<Analysis> {
+    async fn analyze(&self, image: &Path, rtl: bool, threshold: f32, device: &str, ocr: Option<&str>) -> AppResult<Analysis> {
         let v = self
             .call(
                 "analyze",
-                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device, "ocr": ocr}),
+                json!({"image": image, "rtl": rtl, "threshold": threshold, "device": device, "ocr": ocr.is_some(), "lang": ocr.unwrap_or("ja")}),
                 Duration::from_secs(600),
             )
             .await?;
         Ok(serde_json::from_value(v)?)
     }
 
-    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str) -> AppResult<(String, Option<f64>)> {
-        let v = self.call("ocr_region", json!({"image": image, "box": bbox, "device": device}), Duration::from_secs(120)).await?;
+    async fn ocr_region(&self, image: &Path, bbox: [i64; 4], device: &str, lang: &str) -> AppResult<(String, Option<f64>)> {
+        let v = self.call("ocr_region", json!({"image": image, "box": bbox, "device": device, "lang": lang}), Duration::from_secs(120)).await?;
         Ok((v["text"].as_str().unwrap_or_default().to_string(), v["confidence"].as_f64()))
     }
 
@@ -257,27 +272,67 @@ impl Vision for PythonWorker {
 
 /// Locate the worker sources and its Python interpreter.
 pub fn resolve(app_data: &Path, resource_dir: Option<&Path>) -> (PathBuf, PathBuf) {
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../worker");
+    let dev = crate::platform::dev_path("../worker");
+    let bundled = resource_dir.map(|r| r.join("worker"));
     let worker_dir = std::env::var_os("MANGAAI_WORKER_DIR")
         .map(PathBuf::from)
         .filter(|p| p.join("mangaai_worker").exists())
-        .or_else(|| dev.join("mangaai_worker").exists().then(|| dev.clone()))
-        .or_else(|| resource_dir.map(|r| r.join("worker")).filter(|p| p.join("mangaai_worker").exists()))
-        .unwrap_or(dev);
+        .or_else(|| dev.clone().filter(|p| p.join("mangaai_worker").exists()))
+        .or_else(|| bundled.clone().filter(|p| p.join("mangaai_worker").exists()))
+        .or(dev)
+        .or(bundled)
+        .unwrap_or_else(|| app_data.join("worker"));
     let venv_bin = if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" };
     let python = [app_data.join("worker-venv").join(venv_bin), worker_dir.join(".venv").join(venv_bin)]
         .into_iter()
         .find(|p| p.exists())
         .unwrap_or_else(|| app_data.join("worker-venv").join(venv_bin));
-    (worker_dir.canonicalize().unwrap_or(worker_dir), python)
+    (crate::platform::canonicalize(&worker_dir).unwrap_or(worker_dir), python)
+}
+
+/// Folder holding fribidi-0.dll (Windows only): bundled resources, else the dev build output.
+pub fn resolve_native_dir(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    resource_dir
+        .map(|r| r.join("native"))
+        .into_iter()
+        .chain(crate::platform::dev_path("windows/native"))
+        .find(|d| d.join("fribidi-0.dll").exists())
+}
+
+/// uv shipped with the app (Windows installer), else the dev copy from scripts/fetch-uv.ps1.
+pub fn bundled_uv(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    resource_dir
+        .map(|r| r.join("native").join("uv.exe"))
+        .into_iter()
+        .chain(crate::platform::dev_path("windows/native/uv.exe"))
+        .find(|p| p.exists())
+}
+
+/// The bundled uv first (pinned, nothing for the user to install), then one on the system.
+pub fn find_uv_for(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    bundled_uv(resource_dir).or_else(find_uv)
 }
 
 pub fn find_uv() -> Option<PathBuf> {
     which::which("uv").ok().or_else(|| {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        [home.join(".local/bin/uv"), home.join(".cargo/bin/uv"), PathBuf::from("/opt/homebrew/bin/uv"), PathBuf::from("/usr/local/bin/uv")]
-            .into_iter()
-            .find(|p| p.exists())
+        let home = crate::platform::home_dir();
+        let uv = crate::platform::exe("uv");
+        let mut candidates = vec![home.join(".local/bin").join(&uv), home.join(".cargo/bin").join(&uv)];
+        if cfg!(windows) {
+            if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+                candidates.push(local.join("Microsoft/WinGet/Links/uv.exe"));
+                candidates.push(local.join("Programs/uv/uv.exe"));
+            }
+        } else {
+            candidates.extend([PathBuf::from("/opt/homebrew/bin/uv"), PathBuf::from("/usr/local/bin/uv")]);
+        }
+        candidates.into_iter().find(|p| p.exists())
     })
 }
 
@@ -319,16 +374,16 @@ pub mod fake {
         async fn health(&self) -> AppResult<Value> {
             Ok(json!({"raqm": true}))
         }
-        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str, ocr: bool) -> AppResult<Analysis> {
-            self.calls.lock().push(format!("analyze:ocr={ocr}"));
+        async fn analyze(&self, _image: &Path, _rtl: bool, _t: f32, _d: &str, ocr: Option<&str>) -> AppResult<Analysis> {
+            self.calls.lock().push(format!("analyze:ocr={}", ocr.unwrap_or("false")));
             let mut regions = self.regions.clone();
-            if !ocr {
+            if ocr.is_none() {
                 regions.iter_mut().for_each(|r| { r.text.clear(); r.confidence = None; });
             }
             Ok(Analysis { version: "a2".into(), width: 100, height: 100, regions })
         }
-        async fn ocr_region(&self, _image: &Path, _b: [i64; 4], _d: &str) -> AppResult<(String, Option<f64>)> {
-            self.calls.lock().push("ocr_region".into());
+        async fn ocr_region(&self, _image: &Path, _b: [i64; 4], _d: &str, lang: &str) -> AppResult<(String, Option<f64>)> {
+            self.calls.lock().push(format!("ocr_region:{lang}"));
             Ok(("再OCR".into(), Some(0.9)))
         }
         async fn clean(&self, image: &Path, out: &Path, _r: Value, _m: &str, _d: &str) -> AppResult<StageResult> {

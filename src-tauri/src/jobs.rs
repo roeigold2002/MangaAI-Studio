@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 
 use crate::db::{now, Db};
 use crate::error::{AppError, AppResult};
-use crate::pipeline::{load_page, page_state, Engine, PageCtx};
+use crate::pipeline::{load_page, page_state, Analyzed, Engine, PageCtx};
 use crate::providers::{self, TranslationProvider};
 use crate::secrets::SecretStore;
 use crate::settings::{self, AppSettings, ProviderConfig};
@@ -219,12 +219,62 @@ fn job_pages(db: &Db, job: &Job, default_rtl: bool) -> AppResult<Vec<PageCtx>> {
     Ok(out)
 }
 
+/// Why a job stopped starting new batches.
+enum Stop {
+    NotRunning,
+    Preempted,
+    CostLimit,
+    Fatal(String),
+}
+
 pub struct Runner {
     pub engine: Engine,
     pub secrets: Arc<dyn SecretStore>,
     pub notify: Arc<Notify>,
     /// Test hook: use this provider instead of building one from settings.
     pub provider_override: Option<Arc<dyn TranslationProvider>>,
+}
+
+/// Reading near the end of a chapter that is being translated queues the next chapter, so it is
+/// ready by the time the reader gets there. Only with `auto_translate_next`, an allowed provider and
+/// an estimate under the confirmation threshold; a series nothing was translated in costs nothing.
+/// Returns the new job id.
+pub fn translate_ahead(db: &Db, chapter_id: i64, page_idx: i64) -> AppResult<Option<i64>> {
+    let s = settings::load(db)?;
+    if !s.translation.auto_translate_next {
+        return Ok(None);
+    }
+    let (total, translating): (i64, bool) = db.with(|c| {
+        let total: i64 = c.query_row("SELECT count(*) FROM page WHERE chapter_id = ?1", [chapter_id], |r| r.get(0))?;
+        let translating: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job WHERE chapter_id = ?1 AND status != 'cancelled')
+                 OR EXISTS(SELECT 1 FROM page p JOIN page_state s ON s.page_id = p.id WHERE p.chapter_id = ?1 AND s.status = 'done')",
+            [chapter_id],
+            |r| r.get(0),
+        )?;
+        Ok((total, translating))
+    })?;
+    let remaining = total - 1 - page_idx;
+    if total == 0 || !translating || remaining > (total / 5).max(2) {
+        return Ok(None);
+    }
+    let Some(next) = crate::library::queries::chapter_view(db, chapter_id)?.next_chapter_id else { return Ok(None) };
+    let busy: bool = db.with(|c| {
+        Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job WHERE chapter_id = ?1 AND status IN ('queued','running','paused'))",
+            [next],
+            |r| r.get(0),
+        )?)
+    })?;
+    let Some(cfg) = s.active_provider().cloned() else { return Ok(None) };
+    if busy || check_provider_allowed(&s, &cfg).is_err() {
+        return Ok(None);
+    }
+    let est = estimate(db, &[next])?;
+    if est.pages_to_translate == 0 || est.needs_confirmation {
+        return Ok(None);
+    }
+    Ok(Some(enqueue(db, next, None, "missing", 0)?))
 }
 
 pub fn check_provider_allowed(s: &AppSettings, cfg: &ProviderConfig) -> AppResult<()> {
@@ -265,6 +315,25 @@ impl Runner {
 
     fn current_status(&self, id: i64) -> AppResult<String> {
         self.engine.db.with(|c| Ok(c.query_row("SELECT status FROM job WHERE id = ?1", [id], |r| r.get(0))?))
+    }
+
+    /// Whether to start no further batches: paused/cancelled by the user, a higher-priority
+    /// job is waiting, or the cost limit is reached (counting the batches still in flight).
+    fn should_stop(&self, id: i64, job: &Job, s: &AppSettings, projected_cost: f64) -> AppResult<Option<Stop>> {
+        if self.current_status(id)? != "running" {
+            return Ok(Some(Stop::NotRunning));
+        }
+        let higher: Option<i64> = self.engine.db.with(|c| {
+            Ok(c.query_row("SELECT id FROM job WHERE status = 'queued' AND priority > ?1 LIMIT 1", [job.priority], |r| r.get(0))
+                .optional()?)
+        })?;
+        if higher.is_some() {
+            return Ok(Some(Stop::Preempted));
+        }
+        if s.translation.job_cost_limit_usd > 0.0 && projected_cost >= s.translation.job_cost_limit_usd {
+            return Ok(Some(Stop::CostLimit));
+        }
+        Ok(None)
     }
 
     /// Process one job until done, paused, cancelled, failed or preempted.
@@ -310,27 +379,119 @@ impl Runner {
             Ok(())
         })?;
         let (mut completed, mut failed, mut cost) = (0i64, 0i64, job.cost_usd);
-        // Batches in one wave run concurrently (provider requests overlap; the vision
-        // worker serialises itself). With max_concurrency = 1 each batch also sees the
-        // previous batch's lines as context.
         let conc = cfg.max_concurrency.clamp(1, 8) as usize;
         let chunks: Vec<&[PageCtx]> = pages.chunks(batch).collect();
-        for wave in chunks.chunks(conc) {
-            // pause / cancel / preemption checks between waves
-            let st = self.current_status(id)?;
-            if st != "running" {
-                self.emit_job(id);
-                return Ok(());
+
+        // Vision runs one batch ahead of the scheduler: batch N+1 is analyzed while batch N
+        // is with the translator (and its OCR is context for N+1 right away). Up to `conc`
+        // batches are translated at once; the vision worker serialises itself.
+        // `launched`: (batches started, stop); `analyzed`: (batches analyzed, analyzer done).
+        let (launched_tx, launched_rx) = tokio::sync::watch::channel((0usize, false));
+        let (analyzed_tx, analyzed_rx) = tokio::sync::watch::channel((0usize, false));
+        let results: std::sync::Mutex<Vec<Option<AppResult<Analyzed>>>> =
+            std::sync::Mutex::new((0..chunks.len()).map(|_| None).collect());
+        let analyzer = async {
+            let mut rx = launched_rx.clone();
+            for (i, chunk) in chunks.iter().enumerate() {
+                // Never ahead of the first launch (a job paused right away does no work); after
+                // a stop, only batches already launched are still analyzed.
+                let go = rx
+                    .wait_for(|(n, stop)| *stop || *n >= i.max(1))
+                    .await
+                    .map(|v| v.0 > i || !v.1)
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+                let res = self.engine.analyze_pages(chunk, &s).await;
+                let fatal = res.is_err();
+                results.lock().unwrap()[i] = Some(res);
+                analyzed_tx.send_replace((i + 1, false));
+                if fatal {
+                    break;
+                }
             }
-            let higher: Option<i64> = db.with(|c| {
-                Ok(c.query_row(
-                    "SELECT id FROM job WHERE status = 'queued' AND priority > ?1 LIMIT 1",
-                    [job.priority],
-                    |r| r.get(0),
-                )
-                .optional()?)
-            })?;
-            if higher.is_some() {
+            analyzed_tx.send_modify(|v| v.1 = true);
+        };
+        let scheduler = async {
+            let mut in_flight = futures_util::stream::FuturesUnordered::new();
+            let (mut next, mut done_batches, mut stop): (usize, usize, Option<Stop>) = (0, 0, None);
+            loop {
+                while stop.is_none() && next < chunks.len() && in_flight.len() < conc {
+                    // with a cost limit, the first batch runs alone so the spend per batch is known
+                    if s.translation.job_cost_limit_usd > 0.0 && done_batches == 0 && !in_flight.is_empty() {
+                        break;
+                    }
+                    // pause / cancel / preemption / cost checks before every batch
+                    let per_batch = if done_batches > 0 { (cost - job.cost_usd) / done_batches as f64 } else { 0.0 };
+                    stop = self.should_stop(id, &job, &s, cost + per_batch * in_flight.len() as f64)?;
+                    if stop.is_some() {
+                        break;
+                    }
+                    let i = next;
+                    next += 1;
+                    launched_tx.send_replace((next, false));
+                    let mut rx = analyzed_rx.clone();
+                    let (results, provider, s, cfg) = (&results, provider.clone(), &s, &cfg);
+                    in_flight.push(async move {
+                        let _ = rx.wait_for(|(n, done)| *done || *n > i).await;
+                        let analyzed = results.lock().unwrap()[i].take();
+                        let res = match analyzed {
+                            Some(Ok(a)) => Some(self.engine.translate_and_render(a, s, cfg, provider, Some(id), force).await),
+                            Some(Err(e)) => Some(Err(e)),
+                            None => None, // analysis stopped before this batch
+                        };
+                        (i, res)
+                    });
+                }
+                if stop.is_some() || next == chunks.len() {
+                    launched_tx.send_modify(|v| v.1 = true);
+                }
+                let Some((i, res)) = futures_util::StreamExt::next(&mut in_flight).await else { break };
+                done_batches += 1;
+                match res {
+                    None => {}
+                    Some(Ok(o)) => {
+                        completed += (o.translated_pages.len() + o.cached_pages.len()) as i64;
+                        failed += o.failed.len() as i64;
+                        cost += o.cost_usd;
+                    }
+                    Some(Err(e)) => {
+                        failed += chunks[i].len() as i64;
+                        let fatal = matches!(
+                            e.code.as_str(),
+                            "engine_missing" | "model_missing" | "engine_start" | "provider_auth" | "provider_unavailable" | "provider_bad_request"
+                        );
+                        db.with(|c| {
+                            c.execute("UPDATE job SET error = ?1 WHERE id = ?2", params![e.message, id])?;
+                            Ok(())
+                        })?;
+                        if fatal && stop.is_none() {
+                            stop = Some(Stop::Fatal(e.message));
+                        }
+                    }
+                }
+                db.with(|c| {
+                    c.execute(
+                        "UPDATE job SET completed = ?1, failed = ?2, cost_usd = ?3, updated_at = ?4 WHERE id = ?5",
+                        params![completed, failed, cost, now(), id],
+                    )?;
+                    Ok(())
+                })?;
+                self.emit_job(id);
+            }
+            Ok::<_, AppError>(stop)
+        };
+        let scheduler = async {
+            let r = scheduler.await;
+            launched_tx.send_modify(|v| v.1 = true); // on any exit, so the analyzer stops
+            r
+        };
+        let ((), stop) = tokio::join!(analyzer, scheduler);
+        match stop? {
+            None => {}
+            Some(Stop::Fatal(msg)) => return self.finish(id, "failed", Some(msg)),
+            Some(Stop::Preempted) => {
                 db.with(|c| {
                     c.execute("UPDATE job SET status = 'queued' WHERE id = ?1 AND status = 'running'", [id])?;
                     Ok(())
@@ -338,7 +499,7 @@ impl Runner {
                 self.emit_job(id);
                 return Ok(());
             }
-            if s.translation.job_cost_limit_usd > 0.0 && cost >= s.translation.job_cost_limit_usd {
+            Some(Stop::CostLimit) => {
                 db.with(|c| {
                     c.execute(
                         "UPDATE job SET status = 'paused', error = ?1, updated_at = ?2 WHERE id = ?3",
@@ -349,46 +510,10 @@ impl Runner {
                 self.emit_job(id);
                 return Ok(());
             }
-
-            let results = futures_util::future::join_all(
-                wave.iter().map(|chunk| self.engine.process_batch(chunk, &s, &cfg, provider.clone(), Some(id), force)),
-            )
-            .await;
-            for (chunk, res) in wave.iter().zip(results) {
-                match res {
-                    Ok(o) => {
-                        completed += (o.translated_pages.len() + o.cached_pages.len()) as i64;
-                        failed += o.failed.len() as i64;
-                        cost += o.cost_usd;
-                    }
-                    Err(e) => {
-                        failed += chunk.len() as i64;
-                        let fatal = matches!(
-                            e.code.as_str(),
-                            "engine_missing" | "model_missing" | "engine_start" | "provider_auth" | "provider_unavailable" | "provider_bad_request"
-                        );
-                        db.with(|c| {
-                            c.execute(
-                                "UPDATE job SET completed = ?1, failed = ?2, cost_usd = ?3, error = ?4, updated_at = ?5 WHERE id = ?6",
-                                params![completed, failed, cost, e.message, now(), id],
-                            )?;
-                            Ok(())
-                        })?;
-                        if fatal {
-                            self.finish(id, "failed", Some(e.message))?;
-                            return Ok(());
-                        }
-                    }
-                }
+            Some(Stop::NotRunning) => {
+                self.emit_job(id);
+                return Ok(());
             }
-            db.with(|c| {
-                c.execute(
-                    "UPDATE job SET completed = ?1, failed = ?2, cost_usd = ?3, updated_at = ?4 WHERE id = ?5",
-                    params![completed, failed, cost, now(), id],
-                )?;
-                Ok(())
-            })?;
-            self.emit_job(id);
         }
         if failed > 0 {
             self.finish(id, "failed", Some(format!("{failed} page(s) failed — retry failed pages from the queue")))
@@ -493,6 +618,47 @@ mod tests {
     use crate::providers::{ErrorKind, ProviderError};
     use crate::secrets::MemoryStore;
 
+    #[test]
+    fn reading_near_the_end_translates_the_next_chapter_once() {
+        use crate::library::import::import_path;
+        let d = tempfile::tempdir().unwrap();
+        let png = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::new(4, 6).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        for (ch, n) in [("ch1", 10), ("ch2", 6)] {
+            std::fs::create_dir_all(d.path().join("S").join(ch)).unwrap();
+            for i in 1..=n {
+                std::fs::write(d.path().join("S").join(ch).join(format!("{i}.png")), &png).unwrap();
+            }
+        }
+        let db = Db::open_in_memory().unwrap();
+        import_path(&db, &d.path().join("S")).unwrap();
+        let chapters: Vec<i64> = db
+            .with(|c| Ok(c.prepare("SELECT id FROM chapter ORDER BY sort_index")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?))
+            .unwrap();
+        let (ch1, ch2) = (chapters[0], chapters[1]);
+        let mut s = settings::load(&db).unwrap();
+        s.translation.active_provider = "ollama".into(); // local: no cloud notice, no cost
+        settings::save(&db, &s).unwrap();
+        let jobs_for = |ch: i64| -> i64 { db.with(|c| Ok(c.query_row("SELECT count(*) FROM job WHERE chapter_id = ?1", [ch], |r| r.get(0))?)).unwrap() };
+
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "nothing translated in this chapter: no spending");
+        enqueue(&db, ch1, None, "missing", 5).unwrap(); // the user translates chapter 1
+        assert_eq!(translate_ahead(&db, ch1, 3).unwrap(), None, "too early in the chapter");
+        let job = translate_ahead(&db, ch1, 8).unwrap().expect("two pages from the end: next chapter queued");
+        assert_eq!(get(&db, job).unwrap().chapter_id, ch2);
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "already queued: no second job");
+        assert_eq!(jobs_for(ch2), 1);
+
+        set_status(&db, job, "cancelled").unwrap();
+        s.translation.auto_translate_next = false;
+        settings::save(&db, &s).unwrap();
+        assert_eq!(translate_ahead(&db, ch1, 9).unwrap(), None, "switched off");
+        assert_eq!(translate_ahead(&db, ch2, 5).unwrap(), None, "last chapter has no next");
+    }
+
     fn runner(engine: &Engine, provider: Arc<dyn TranslationProvider>) -> Runner {
         Runner {
             engine: engine.clone(),
@@ -513,6 +679,106 @@ mod tests {
             }
         }
         settings::save(&engine.db, &s).unwrap();
+    }
+
+    /// Answers every id it is asked for, slowly, and remembers how many requests overlapped.
+    #[derive(Default)]
+    struct EchoProvider {
+        requests: parking_lot::Mutex<Vec<String>>,
+        in_flight: std::sync::atomic::AtomicUsize,
+        max_in_flight: std::sync::atomic::AtomicUsize,
+        cost_per_call: f64,
+    }
+
+    #[async_trait::async_trait]
+    impl TranslationProvider for EchoProvider {
+        fn id(&self) -> &str {
+            "echo"
+        }
+        fn model(&self) -> &str {
+            "echo"
+        }
+        fn capabilities(&self) -> providers::Capabilities {
+            providers::Capabilities { vision: true, local: true, needs_key: false }
+        }
+        async fn complete(&self, req: &providers::ProviderRequest) -> Result<providers::ProviderResponse, ProviderError> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, SeqCst);
+            self.requests.lock().push(req.user.clone());
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            self.in_flight.fetch_sub(1, SeqCst);
+            let ids: Vec<(String, String)> = req
+                .user
+                .lines()
+                .filter_map(|l| l.strip_prefix('[')?.split_once(']').map(|(id, _)| (id.to_string(), format!("ת-{id}"))))
+                .collect();
+            let ids: Vec<(&str, &str)> = ids.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            Ok(providers::ProviderResponse {
+                text: tr_json(&ids)?,
+                usage: providers::Usage { input_tokens: Some(1), output_tokens: Some(1), reported_cost_usd: Some(self.cost_per_call) },
+                model: "echo".into(),
+            })
+        }
+    }
+
+    fn set_concurrency(engine: &Engine, conc: u32, cost_limit: f64) {
+        let mut s = settings::load(&engine.db).unwrap();
+        s.translation.job_cost_limit_usd = cost_limit;
+        s.translation.providers.iter_mut().filter(|p| p.id == "ollama").for_each(|p| p.max_concurrency = conc);
+        settings::save(&engine.db, &s).unwrap();
+    }
+
+    #[tokio::test]
+    async fn batches_run_concurrently_with_earlier_pages_as_context() {
+        let (_d, engine, _fake, ch) = setup(&["こんにちは", "元気？"]);
+        settings_for_test(&engine);
+        set_concurrency(&engine, 3, 0.0);
+        let echo = Arc::new(EchoProvider::default());
+        let id = enqueue(&engine.db, ch, None, "missing", 0).unwrap();
+        runner(&engine, echo.clone()).run_job(id).await.unwrap();
+        let j = get(&engine.db, id).unwrap();
+        assert_eq!((j.status.as_str(), j.completed, j.failed), ("done", 3, 0));
+        assert_eq!(echo.max_in_flight.load(std::sync::atomic::Ordering::SeqCst), 3, "all three pages were translated at once");
+        let reqs = echo.requests.lock().clone();
+        assert_eq!(reqs.len(), 3);
+        // page 3 was sent while pages 1-2 were still in flight: their OCR lines are its context
+        let p3 = reqs.iter().find(|u| u.contains("## Page 3")).unwrap();
+        let ctx = p3.split("Translate these items").next().unwrap();
+        assert_eq!(ctx.matches("こんにちは").count(), 2, "{ctx}");
+        for pid in engine.db.with(|c| {
+            let mut s = c.prepare("SELECT id FROM page")?;
+            let v = s.query_map([], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(v)
+        }).unwrap() {
+            assert_eq!(page_state(&engine.db, pid).unwrap().status, "done");
+        }
+    }
+
+    #[tokio::test]
+    async fn cost_limit_pauses_before_the_next_batch() {
+        let (_d, engine, _fake, ch) = setup(&["あ"]);
+        settings_for_test(&engine);
+        set_concurrency(&engine, 1, 0.15);
+        let echo = Arc::new(EchoProvider { cost_per_call: 0.10, ..Default::default() });
+        let id = enqueue(&engine.db, ch, None, "missing", 0).unwrap();
+        runner(&engine, echo.clone()).run_job(id).await.unwrap();
+        let j = get(&engine.db, id).unwrap();
+        assert_eq!((j.status.as_str(), j.completed), ("paused", 2));
+        assert!(j.error.unwrap().contains("cost limit"));
+        assert_eq!(echo.requests.lock().len(), 2);
+
+        // Concurrent: the first batch runs alone, then batches in flight count at the spend
+        // per batch so far, so no more is spent than one batch at a time would.
+        let (_d, engine, _fake, ch) = setup(&["あ"]);
+        settings_for_test(&engine);
+        set_concurrency(&engine, 3, 0.15);
+        let echo = Arc::new(EchoProvider { cost_per_call: 0.10, ..Default::default() });
+        let id = enqueue(&engine.db, ch, None, "missing", 0).unwrap();
+        runner(&engine, echo.clone()).run_job(id).await.unwrap();
+        let j = get(&engine.db, id).unwrap();
+        assert_eq!((j.status.as_str(), j.completed), ("paused", 2));
+        assert_eq!(echo.requests.lock().len(), 2);
     }
 
     #[tokio::test]

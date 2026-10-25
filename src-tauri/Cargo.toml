@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled", "serde_json"] }
@@ -45,10 +47,19 @@ tempfile = "3"
 futures-util = "0.3"
 which = "7"
 fs4 = "1"
+tauri-plugin-notification = "2"
 
 [features]
 # Debug aid: lets the frontend save PNG snapshots of the webview (visual QA without screen-recording rights).
 dev-snapshot = ["dep:objc2", "dep:objc2-web-kit", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:block2"]
+
+# A second launch focuses the running window instead of starting another queue runner,
+# worker and Suwayomi against the same library (macOS already enforces this for .app bundles).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects"] }
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }

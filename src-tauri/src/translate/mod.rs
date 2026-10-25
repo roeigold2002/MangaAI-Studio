@@ -69,7 +69,7 @@ pub fn user_message(ctx: &Context, pages: &[PageInput]) -> String {
         }
     }
     if !ctx.previous_lines.is_empty() {
-        s.push_str("\nPrevious lines (already translated, for continuity):\n");
+        s.push_str("\nPrevious lines in this chapter, for continuity (\"source → translation\"; lines without → are not translated yet):\n");
         for l in &ctx.previous_lines {
             s.push_str(&format!("{l}\n"));
         }
@@ -125,6 +125,19 @@ impl RetryPolicy {
     }
 }
 
+/// Thinking-token cap per request, for providers that take a fixed budget. Translating a
+/// page needs little deliberation: uncapped, Claude Code's "medium" spent ~11k thinking
+/// tokens (~100 s, ~3/4 of the cost) on one page, versus ~1.5k when capped at 3k with
+/// equivalent translations. "best" stays uncapped.
+pub fn thinking_budget(effort: &str, pages: usize) -> Option<u32> {
+    let per_page = match effort {
+        "low" => 1024,
+        "medium" => 2048,
+        _ => return None,
+    };
+    Some(per_page * pages.max(1) as u32)
+}
+
 /// Translate a batch. Retries transport errors and malformed output, then
 /// re-asks only for ids the model skipped. Returns whatever was validated;
 /// ids still missing are reported in `validated.missing`.
@@ -146,6 +159,7 @@ pub async fn translate_batch(
         schema: prompt::schema(),
         max_output_tokens,
         effort: effort.to_string(),
+        thinking_budget: thinking_budget(effort, pages.len()),
     };
     let mut merged: Option<Validated> = None;
     let mut responses = vec![];
@@ -244,6 +258,15 @@ pub fn empty_out() -> TranslationOut {
 mod tests {
     use super::*;
     use crate::providers::test_support::MockProvider;
+
+    #[test]
+    fn thinking_budget_scales_with_pages_and_best_is_uncapped() {
+        assert_eq!(thinking_budget("medium", 1), Some(2048));
+        assert_eq!(thinking_budget("medium", 4), Some(8192));
+        assert_eq!(thinking_budget("low", 2), Some(2048));
+        assert_eq!(thinking_budget("low", 0), Some(1024));
+        assert_eq!(thinking_budget("high", 2), None);
+    }
 
     fn page(ids: &[&str]) -> PageInput {
         PageInput {

@@ -152,6 +152,76 @@ def test_protocol_roundtrip():
     assert lines[2]["id"] == 3 and lines[2]["ok"]
 
 
+def test_protocol_is_utf8_on_every_platform(tmp_path):
+    """The app writes raw UTF-8 (Hebrew text, Japanese/Hebrew file names). On Windows the
+    worker's default stdin encoding is the ANSI code page, so this must not depend on it."""
+    missing = tmp_path / "תמונה_画像.png"
+    req = json.dumps({"id": 7, "method": "analyze", "params": {"image": str(missing), "ocr": False}}, ensure_ascii=False)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    p = subprocess.run(
+        [sys.executable, "-m", "mangaai_worker"],
+        input=(req + "\n" + '{"id":8,"method":"shutdown"}\n').encode("utf-8"),
+        capture_output=True, cwd=ROOT / "worker", env=dict(env, HF_HUB_OFFLINE="1"), timeout=120,
+    )
+    out = p.stdout.decode("utf-8")
+    assert "\r" not in out, "protocol lines end with \\n only"
+    first = json.loads(out.splitlines()[0])
+    assert first["id"] == 7 and not first["ok"]
+    assert first["error"]["code"] == "file_not_found"
+    assert "תמונה_画像.png" in first["error"]["message"], first["error"]["message"]
+
+
+def test_glyph_clipped_by_the_detector_box_is_erased(tmp_path):
+    """Regression (seen on a real page): the detector box clipped the first glyph of a line and
+    the last glyph of another, and they stayed visible next to the Hebrew. Every letter in a
+    plain bubble that touches the text area, or continues its line, must go."""
+    src = tmp_path / "page.png"
+    im = Image.new("RGB", (600, 360), (120, 90, 60))
+    d = ImageDraw.Draw(im)
+    d.ellipse((40, 30, 560, 330), fill="white", outline="black", width=5)
+    glyphs = []
+    for row, y in enumerate((120, 190)):
+        for i in range(6):
+            x = 150 + i * 50
+            d.rectangle((x, y, x + 34, y + 40), outline="black", width=5)  # a "kanji": a ring of ink
+            d.line((x + 6, y + 20, x + 28, y + 20), fill="black", width=4)
+            glyphs.append((x, y))
+    im.save(src)
+    out = tmp_path / "clean.png"
+    # box misses the first glyph of row 1 entirely and most of the last glyph of row 2
+    box = [205, 118, 412, 232]
+    res = clean(str(src), str(out), [{"rid": "r1", "kind": "bubble", "bbox": box, "bubble": [40, 30, 560, 330]}], "lama")
+    assert res["methods"] == ["fill"]
+    arr = np.array(Image.open(out).convert("L"))
+    for x, y in glyphs:
+        assert arr[y - 2 : y + 43, x - 2 : x + 37].min() > 200, f"glyph at {x},{y} erased"
+    assert arr[180, 42:50].min() < 80, "bubble outline kept"
+    assert arr[10, 10] < 150, "page outside the bubble untouched"
+
+
+def test_letters_near_the_edge_of_a_bubble_cut_by_the_panel_border(tmp_path):
+    """Regression: a bubble cut open by the panel border trips the leak check, which clips the
+    background to an ellipse; letters near the box corners then stayed on the page."""
+    src = tmp_path / "page.png"
+    im = Image.new("RGB", (600, 400), (110, 80, 50))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, 0, 600, 40), fill="white")  # gutter above the panel
+    d.rounded_rectangle((80, -60, 520, 230), radius=60, fill="white", outline="black", width=5)
+    d.rectangle((80, 40, 520, 44), fill="white")  # the panel border cuts the bubble open
+    glyphs = [(110, 60), (160, 60), (210, 60), (110, 150), (160, 150)]
+    for x, y in glyphs:
+        d.rectangle((x, y, x + 34, y + 40), outline="black", width=5)
+    im.save(src)
+    out = tmp_path / "clean.png"
+    res = clean(str(src), str(out), [{"rid": "r1", "kind": "bubble", "bbox": [118, 58, 250, 192], "bubble": [80, 40, 520, 230]}], "lama")
+    assert res["methods"] == ["fill"]
+    arr = np.array(Image.open(out).convert("L"))
+    for x, y in glyphs:
+        assert arr[y - 2 : y + 43, x - 2 : x + 37].min() > 200, f"glyph at {x},{y} erased"
+    assert arr[300, 300] < 150, "art below the bubble untouched"
+    assert arr[120, 516:521].max() < 80, "bubble outline kept"
+
+
 def test_tight_text_box_in_round_bubble_on_dark_page(tmp_path):
     """Regression: detector boxes hug the text, so letters touch the box border. The text must
     still be erased, and nothing outside the round bubble (dark art, outline) may be painted."""
@@ -169,3 +239,53 @@ def test_tight_text_box_in_round_bubble_on_dark_page(tmp_path):
     assert arr[110:185, 140:261].min() > 200, "text erased"
     assert arr[45, 70] < 50 and arr[255, 330] < 50, "dark corners outside the bubble untouched"
     assert arr[150, 61:66].min() < 80, "bubble outline kept"
+
+
+def test_english_lines_are_joined_and_hyphens_mended():
+    from mangaai_worker.analyze import join_en_lines
+
+    assert join_en_lines(["IF YOU'RE", "GOING FOR", "A WALK?"]) == "IF YOU'RE GOING FOR A WALK?"
+    assert join_en_lines(["IT'S IM-", "POSSIBLE!"]) == "IT'S IMPOSSIBLE!"
+    assert join_en_lines(["WAIT --", "WHAT?"]) == "WAIT -- WHAT?", "dashes are not hyphenation"
+    assert join_en_lines(["", " OK ", ""]) == "OK"
+
+
+needs_en_ocr = pytest.mark.skipif(not __import__("mangaai_worker.models", fromlist=["x"]).hf_cached(
+    "microsoft/trocr-base-printed"), reason="English OCR model not downloaded")
+
+
+@needs_en_ocr
+def test_english_ocr_reads_a_lettered_bubble():
+    from PIL import ImageFont
+
+    from mangaai_worker.analyze import en_ocr_box
+
+    im = Image.new("RGB", (420, 200), "white")
+    d = ImageDraw.Draw(im)
+    f = ImageFont.truetype(str(FONTS / "VarelaRound-Regular.ttf"), 30)
+    for i, line in enumerate(["I'M GONNA BE", "WALKING TOWARD", "THE STATION..."]):
+        w = d.textlength(line, font=f)
+        d.text(((420 - w) / 2, 30 + i * 45), line, font=f, fill="black")
+    text, conf = en_ocr_box(im, [60, 25, 360, 170], "cpu")
+    assert text.replace(" ", "") == "I'MGONNABEWALKINGTOWARDTHESTATION...", text
+    assert conf is not None and conf > 0.5
+
+
+def test_two_text_blocks_in_one_balloon_get_separate_areas():
+    """Regression (real English page): one cloud balloon was detected as two overlapping bubbles,
+    each text block got the whole area, and the two Hebrew texts were drawn over each other."""
+    hey = {"bbox": [213, 672, 367, 743], "bubble": [192, 586, 404, 838]}
+    out = {"bbox": [113, 760, 266, 889], "bubble": [71, 642, 318, 977]}
+    boxes = [render.render_box(r, 1400, 2045, 0.10) for r in (hey, out)]
+    sep = render.separate_boxes(boxes, [hey["bbox"], out["bbox"]], [False, False])
+    a, b = sep
+    assert min(a[2], b[2]) <= max(a[0], b[0]) or min(a[3], b[3]) <= max(a[1], b[1]), f"still overlapping: {sep}"
+    for box, r in zip(sep, (hey, out)):  # each area still covers most of its own text
+        t = r["bbox"]
+        assert box[0] <= t[0] + 2 and box[2] >= t[2] - 2
+    # a box the user placed by hand is never moved
+    fixed = render.separate_boxes(boxes, [hey["bbox"], out["bbox"]], [True, False])
+    assert fixed[0] == list(boxes[0])
+    # boxes that do not touch are left alone
+    far = render.separate_boxes([[0, 0, 10, 10], [20, 20, 30, 30]], [[0, 0, 10, 10], [20, 20, 30, 30]], [False, False])
+    assert far == [[0, 0, 10, 10], [20, 20, 30, 30]]

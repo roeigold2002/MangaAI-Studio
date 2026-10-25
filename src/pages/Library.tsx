@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Heart, LayoutGrid, List, Plus, Search, X } from "lucide-react";
+import { BellRing, Heart, LayoutGrid, List, Plus, Search, X } from "lucide-react";
 import { api } from "../lib/api";
-import { toastError, useApp, useLoad } from "../lib/store";
+import { toast, toastError, useApp, useLoad } from "../lib/store";
 import { ago } from "../lib/util";
 import { Empty, ErrorBox, MangaCard, Modal } from "../components/ui";
 import { ImportButtons } from "../components/ImportButton";
@@ -67,6 +67,20 @@ export default function LibraryPage() {
     }
   }
 
+  const [checking, setChecking] = useState(false);
+  async function checkNew() {
+    setChecking(true);
+    try {
+      const r = await api.checkNewChapters();
+      if (!r.new.length) toast(`אין פרקים חדשים (${r.checked} סדרות נבדקו${r.failed.length ? `, ${r.failed.length} לא ענו` : ""})`, "ok");
+      reload();
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setChecking(false);
+    }
+  }
+
   return (
     <div className="page">
       <div className="page-head">
@@ -74,7 +88,12 @@ export default function LibraryPage() {
           <h1>הספרייה שלי</h1>
           <p className="muted">{items.length} כותרים</p>
         </div>
-        <ImportButtons onDone={reload} />
+        <div className="row wrap">
+          <button className="btn ghost" disabled={checking} onClick={checkNew} title="בודק בכל הסדרות מהאינטרנט אם יצאו פרקים חדשים">
+            <BellRing size={15} /> {checking ? "בודק…" : "בדיקת פרקים חדשים"}
+          </button>
+          <ImportButtons onDone={reload} />
+        </div>
       </div>
 
       <div className="tabs" role="tablist">

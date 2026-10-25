@@ -84,6 +84,9 @@ def _bubble_fill_mask(gray: np.ndarray, bubble: list[int], parts: list[list[int]
     if ids.size == 0:
         return np.zeros_like(gray)
     comp = labels == ids[np.argmax(counts)]
+    # Letters are found before any clipping: a glyph fully enclosed by the bubble background
+    # is text even when the bubble is cut open by a panel border.
+    raw_holes, lab, stats, hole_ids = _holes(comp)
     # leak check: an open outline lets the region run along the bubble box edge
     edge = np.concatenate([comp[0], comp[-1], comp[:, 0], comp[:, -1]])
     if edge.mean() > 0.35:
@@ -92,14 +95,57 @@ def _bubble_fill_mask(gray: np.ndarray, bubble: list[int], parts: list[list[int]
         cv2.ellipse(ell, (cx, cy), (max(1, int(cx * 0.9)), max(1, int(cy * 0.9))), 0, 0, 360, 1, -1)
         comp = comp & (ell > 0)
     # holes inside the region = the letters
-    inv = (~comp).astype(np.uint8)
-    m, lab2 = cv2.connectedComponents(inv, connectivity=4)
-    border_ids = set(np.unique(np.concatenate([lab2[0], lab2[-1], lab2[:, 0], lab2[:, -1]])).tolist())
-    holes = np.isin(lab2, [i for i in range(1, m) if i not in border_ids])
-    filled = (comp | holes).astype(np.uint8) * 255
+    holes = _holes(comp)[0]
+    area = rect[by1:by2, bx1:bx2] > 0
+    filled = (comp | holes) & area
+    letters = _whole_letters(lab, stats, hole_ids, area)
+    if letters:
+        grown = cv2.dilate(np.isin(lab, letters).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        filled |= grown & (comp | holes | raw_holes)
     mask = np.zeros_like(gray)
-    mask[by1:by2, bx1:bx2] = filled
-    return cv2.bitwise_and(mask, rect)
+    mask[by1:by2, bx1:bx2] = filled.astype(np.uint8) * 255
+    return mask
+
+
+def _holes(region: np.ndarray):
+    """Areas fully enclosed by `region` (not reaching the crop border): (mask, labels, stats, ids)."""
+    m, lab, stats, _ = cv2.connectedComponentsWithStats((~region).astype(np.uint8), connectivity=4)
+    border_ids = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]])).tolist())
+    ids = [i for i in range(1, m) if i not in border_ids]
+    return np.isin(lab, ids), lab, stats, ids
+
+
+def _whole_letters(lab: np.ndarray, stats: np.ndarray, hole_ids: list[int], area: np.ndarray) -> list[int]:
+    """Letters to erase completely: every hole the text area touches, then its neighbours
+    along the same line. Detector boxes often clip the first or last glyph of a line; erasing
+    only the box would leave that glyph (or half of it) next to the translation."""
+    touched = set(np.unique(lab[area]).tolist())
+    chosen = [i for i in hole_ids if i in touched]
+    if not chosen:
+        return []
+    size = float(np.median([max(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]) for i in chosen]))
+    gap = max(4.0, 0.8 * size)
+    box = lambda i: (stats[i, 0], stats[i, 1], stats[i, 0] + stats[i, 2], stats[i, 1] + stats[i, 3])  # noqa: E731
+    pending = [i for i in hole_ids if i not in touched and max(stats[i, 2], stats[i, 3]) <= 2.5 * size]
+    sel = [box(i) for i in chosen]
+    changed = True
+    while changed and pending:
+        changed = False
+        for i in list(pending):
+            x1, y1, x2, y2 = box(i)
+            for sx1, sy1, sx2, sy2 in sel:
+                dx = max(sx1 - x2, x1 - sx2, 0)
+                dy = max(sy1 - y2, y1 - sy2, 0)
+                # same row (horizontal text) or same column (vertical text), within one glyph gap
+                row = dy == 0 and min(y2, sy2) - max(y1, sy1) >= 0.3 * min(y2 - y1, sy2 - sy1)
+                col = dx == 0 and min(x2, sx2) - max(x1, sx1) >= 0.3 * min(x2 - x1, sx2 - sx1)
+                if (row and dx <= gap) or (col and dy <= gap):
+                    chosen.append(i)
+                    sel.append((x1, y1, x2, y2))
+                    pending.remove(i)
+                    changed = True
+                    break
+    return chosen
 
 
 def _inside(mask: np.ndarray, bubble: list[int], shrink: float) -> np.ndarray:

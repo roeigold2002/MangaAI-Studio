@@ -118,10 +118,11 @@ mod tests {
         ProviderRequest {
             system: "s".into(),
             user: "u".into(),
-            images: vec![ImagePart { mime: "image/jpeg".into(), data: vec![0xff], path: None }],
+            images: vec![ImagePart { mime: "image/jpeg".into(), data: vec![0xff] }],
             schema: json!({"type": "object"}),
             max_output_tokens: 100,
             effort: "medium".into(),
+            thinking_budget: None,
         }
     }
 

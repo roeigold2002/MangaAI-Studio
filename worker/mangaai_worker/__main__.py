@@ -13,9 +13,17 @@ import os
 import sys
 import traceback
 
+# The app always speaks UTF-8; on Windows the default would be the ANSI code page,
+# which mangles Hebrew/Japanese text and non-ASCII paths.
+sys.stdin.reconfigure(encoding="utf-8")
 # Keep the protocol channel clean: libraries that print go to stderr.
-_proto = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
+_proto = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1, newline="\n")
 sys.stdout = sys.stderr
+sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+from . import native  # noqa: E402  (must run before Pillow is imported)
+
+native.setup()
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("mangaai.worker")
@@ -42,6 +50,9 @@ def _health(_params: dict) -> dict:
 
         info["torch"] = torch.__version__
         info["device"] = models.pick_device("auto")
+        info["cuda"] = bool(torch.cuda.is_available())
+        if info["cuda"]:
+            info["gpu"] = torch.cuda.get_device_name(0)
     except Exception as e:  # torch missing => vision disabled, rendering still works
         info["torch"] = None
         info["torch_error"] = str(e)
@@ -51,13 +62,13 @@ def _health(_params: dict) -> dict:
 def _analyze(p: dict) -> dict:
     from .analyze import analyze
 
-    return analyze(p["image"], p.get("device", "auto"), float(p.get("threshold", 0.35)), p.get("rtl", True), p.get("ocr", True))
+    return analyze(p["image"], p.get("device", "auto"), float(p.get("threshold", 0.35)), p.get("rtl", True), p.get("ocr", True), p.get("lang", "ja"))
 
 
 def _ocr_region(p: dict) -> dict:
     from .analyze import ocr_region
 
-    return ocr_region(p["image"], p["box"], p.get("device", "auto"))
+    return ocr_region(p["image"], p["box"], p.get("device", "auto"), p.get("lang", "ja"))
 
 
 def _clean(p: dict) -> dict:
@@ -102,6 +113,14 @@ def _error_code(e: Exception) -> str:
     return "worker_error"
 
 
+def _release_gpu_cache() -> None:
+    """Hand cached CUDA blocks back after each request: a local LLM (Ollama) shares the GPU,
+    and on Windows any over-commit gets paged to system RAM and slows it ~20x."""
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available() and torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+
+
 def main() -> None:
     log.info("worker ready (pid %s)", os.getpid())
     for line in sys.stdin:
@@ -120,6 +139,7 @@ def main() -> None:
             if fn is None:
                 raise ValueError(f"unknown method {method}")
             result = fn(req.get("params") or {})
+            _release_gpu_cache()
             resp = {"id": rid, "ok": True, "result": result}
         except Exception as e:  # report every failure to the caller, keep serving
             log.error("request %s failed: %s\n%s", rid, e, traceback.format_exc())

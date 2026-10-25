@@ -218,6 +218,14 @@ CREATE TABLE download (
     r#"
 ALTER TABLE download ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 "#,
+    // 3: one version per chapter: remember the scanlation group, whether the version was
+    //    picked automatically (bulk download), and the other versions to fall back to
+    r#"
+ALTER TABLE download ADD COLUMN scanlator TEXT;
+ALTER TABLE download ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE download ADD COLUMN alternates TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE manga ADD COLUMN preferred_scanlator TEXT;
+"#,
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

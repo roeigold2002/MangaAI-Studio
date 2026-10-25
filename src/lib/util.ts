@@ -1,5 +1,20 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+export type Platform = "mac" | "windows" | "linux";
+export function detectPlatform(ua: string): Platform {
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "mac";
+  return "linux";
+}
+export const platform: Platform = detectPlatform(typeof navigator === "undefined" ? "" : navigator.userAgent);
+
+/** Where API keys and passwords are kept on this OS, in the UI's words. */
+export function credentialStoreName(p: Platform = platform): string {
+  if (p === "windows") return "מנהל האישורים של Windows";
+  if (p === "mac") return "ה-Keychain של macOS";
+  return "מאגר הסיסמאות של המערכת";
+}
+
 // Base of the mangaimg:// protocol for this platform (mangaimg://localhost/ on macOS,
 // http://mangaimg.localhost/ on Windows).
 let base: string | null = null;
@@ -100,7 +115,7 @@ export const LANG_NAMES: Record<string, string> = {
 export const langName = (code: string) => LANG_NAMES[code] ?? code;
 
 export const jobLabel: Record<string, string> = {
-  queued: "בתור", running: "בעבודה", paused: "מושהה", done: "הושלם", failed: "הסתיים עם שגיאות", cancelled: "בוטל",
+  queued: "בתור", running: "בעבודה", paused: "מושהה", done: "הושלם", failed: "הסתיים עם שגיאות", cancelled: "בוטל", skipped: "דולג",
 };
 
 /** Strip a prefix shared by all chapter titles ("Series Name v01", "Series Name v02" → "v01", "v02"). */
@@ -120,3 +135,43 @@ export function chapterTranslationBadge(t: { total: number; done: number; failed
   if (t.done > 0 || t.in_progress > 0) return { cls: "run", text: `${t.done}/${t.total}` };
   return null;
 }
+
+/** Versions of the same chapter (one per scanlation group) share this key; 104 and 104.5 differ. */
+export function chapterKey(c: { number: number | null; title: string }): string {
+  return c.number != null ? `n:${Math.round(c.number * 1000)}` : `t:${c.title.trim().toLowerCase()}`;
+}
+
+/** Chapters numbered from..to (inclusive, with to's decimals: 1–3 includes 3.5). Unnumbered sources use list positions. */
+export function chaptersInRange<T extends { number: number | null }>(chapters: T[], from: number, to: number): T[] {
+  if (!chapters.some((c) => c.number != null)) return chapters.slice(from - 1, to);
+  return chapters.filter((c) => c.number != null && c.number >= from && c.number < to + 1);
+}
+
+/** Distinct chapters vs. listed versions, chapters not held in any version, and the scanlation groups. */
+export function chapterStats(chapters: { number: number | null; title: string; chapter_ref: string; scanlator: string | null }[], downloads: Record<string, string>) {
+  const held = new Set<string>();
+  const all = new Set<string>();
+  const groups = new Map<string, number>();
+  for (const c of chapters) {
+    const k = chapterKey(c);
+    all.add(k);
+    if (["done", "queued", "running"].includes(downloads[c.chapter_ref])) held.add(k);
+    const g = c.scanlator?.trim();
+    if (g) groups.set(g, (groups.get(g) ?? 0) + 1);
+  }
+  return {
+    distinct: all.size,
+    versions: chapters.length,
+    missing: [...all].filter((k) => !held.has(k)).length,
+    groups: [...groups.entries()].sort((a, b) => b[1] - a[1]),
+  };
+}
+
+/** Local models in the order that worked best in our tests on a 16 GB GPU: gemma4:12b fits fully
+ *  next to the OCR worker (~8 s/page); the 26b reads a bit better but must spill layers to the CPU
+ *  there (~25 s/page). The first one installed is suggested in the pickers. */
+export const OLLAMA_RECOMMENDED = ["gemma4:12b", "gemma4:26b-a4b-it-qat", "gemma4:26b"];
+export function recommendedOllamaModel(installed: string[]): string | null {
+  return OLLAMA_RECOMMENDED.find((m) => installed.includes(m)) ?? null;
+}
+export const ollamaOptionLabel = (m: string, installed: string[]) => (m === recommendedOllamaModel(installed) ? `${m} (מומלץ)` : m);
