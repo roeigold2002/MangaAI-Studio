@@ -136,6 +136,17 @@ pub async fn nvidia_gpus() -> Vec<String> {
     }
 }
 
+/// Memory of the largest NVIDIA GPU in MiB (via `nvidia-smi`); None without an NVIDIA driver.
+pub async fn nvidia_vram_mib() -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    let mut cmd = tokio::process::Command::new("nvidia-smi");
+    no_window(&mut cmd).args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"]).kill_on_drop(true);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output()).await.ok()?.ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,6 +26,9 @@ pub struct ProviderConfig {
     pub price_input_per_mtok: f64,
     pub price_output_per_mtok: f64,
     pub max_output_tokens: u32,
+    /// Ollama only: model layers kept on the GPU (0 = Ollama decides). Leaves VRAM for the OCR
+    /// worker; a model that only just fits otherwise gets paged by Windows and slows down ~20×.
+    pub gpu_layers: u32,
 }
 
 impl Default for ProviderConfig {
@@ -43,6 +46,7 @@ impl Default for ProviderConfig {
             price_input_per_mtok: 0.0,
             price_output_per_mtok: 0.0,
             max_output_tokens: 8000,
+            gpu_layers: 0,
         }
     }
 }

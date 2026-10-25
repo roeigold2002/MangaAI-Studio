@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, KeyRound, ShieldCheck } from "lucide-react";
 import { api, errMessage } from "../lib/api";
 import { toast, toastError, useApp, useLoad } from "../lib/store";
-import { credentialStoreName, platform, usd } from "../lib/util";
+import { credentialStoreName, ollamaOptionLabel, platform, usd } from "../lib/util";
 import { Field, Spinner } from "../components/ui";
 import type { ProviderConfig, Settings } from "../lib/types";
 
@@ -220,7 +220,7 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
           {p.kind === "ollama" && models.length ? (
             <select className="select ltr" value={p.model} onChange={(e) => onChange({ model: e.target.value })}>
               <option value="">בחר דגם</option>
-              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+              {models.map((m) => <option key={m} value={m}>{ollamaOptionLabel(m, models)}</option>)}
             </select>
           ) : (
             <input className="input ltr" value={p.model} onChange={(e) => onChange({ model: e.target.value })} placeholder="model id" />
@@ -236,6 +236,11 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
             <option value="1">כן</option><option value="0">רק טקסט</option>
           </select>
         </Field>
+        {p.kind === "ollama" && (
+          <Field label="שכבות על כרטיס המסך" hint="0 = אוטומטי. אם התרגום איטי מאוד, הורידו (למשל 26 ל-gemma4:26b) כדי להשאיר מקום לזיהוי הטקסט">
+            <input className="input" type="number" min={0} max={200} value={p.gpu_layers ?? 0} onChange={(e) => onChange({ gpu_layers: Number(e.target.value) })} />
+          </Field>
+        )}
         <Field label="זמן המתנה לבקשה (שניות)">
           <input className="input" type="number" min={10} max={1800} value={p.timeout_secs} onChange={(e) => onChange({ timeout_secs: Number(e.target.value) })} />
         </Field>

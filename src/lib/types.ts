@@ -48,7 +48,7 @@ export interface ImportReport {
 
 export interface ProviderConfig {
   id: string; kind: string; label: string; model: string; endpoint: string; max_concurrency: number; timeout_secs: number;
-  max_retries: number; send_images: boolean; price_input_per_mtok: number; price_output_per_mtok: number; max_output_tokens: number;
+  max_retries: number; send_images: boolean; price_input_per_mtok: number; price_output_per_mtok: number; max_output_tokens: number; gpu_layers: number;
 }
 
 export interface Settings {

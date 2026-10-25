@@ -3,7 +3,7 @@
 //! review. Nothing is retried on purpose: a model that breaks the JSON schema shows up as failed.
 //!
 //! Usage: cargo run --example bench_translate -- <cbz> <provider-id> <model> <pages> <lang ja|en> <out.json>
-//! MANGAAI_E2E_IMAGES=0: text only. Spends provider credits for cloud providers (none for Ollama).
+//! MANGAAI_E2E_IMAGES=0: text only. MANGAAI_GPU_LAYERS=n: Ollama layers on the GPU. Spends provider credits for cloud providers (none for Ollama).
 
 use std::sync::Arc;
 
@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         p.model = model.clone();
         p.max_retries = 0;
         p.send_images = std::env::var("MANGAAI_E2E_IMAGES").as_deref() != Ok("0");
+        p.gpu_layers = std::env::var("MANGAAI_GPU_LAYERS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     }
     settings::save(&db, &s)?;
 

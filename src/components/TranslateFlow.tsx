@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errMessage } from "../lib/api";
 import { toast, useApp } from "../lib/store";
-import { chapterTranslationBadge, credentialStoreName, langName } from "../lib/util";
+import { chapterTranslationBadge, credentialStoreName, langName, ollamaOptionLabel, recommendedOllamaModel } from "../lib/util";
 import { Field, Modal, Spinner } from "./ui";
 import { TranslateDialog } from "./TranslateDialog";
 import type { ChapterInfo, ProviderStatus } from "../lib/types";
@@ -42,7 +42,13 @@ export function ProviderSetup({ status, onDone, onClose }: { status: ProviderSta
     const c = settings!.translation.providers.find((p) => p.id === choice);
     setModel(c?.model || CHOICES.find((x) => x.id === choice)!.model);
     setError(null);
-    if (choice === "ollama") api.ollamaModels(c?.endpoint || "http://127.0.0.1:11434").then(setModels).catch(() => setModels([]));
+    if (choice === "ollama")
+      api.ollamaModels(c?.endpoint || "http://127.0.0.1:11434")
+        .then((ms) => {
+          setModels(ms);
+          if (!c?.model) setModel(recommendedOllamaModel(ms) ?? "");
+        })
+        .catch(() => setModels([]));
     if (choice === "claude_cli") api.claudeCliStatus(c?.endpoint).then((r) => setCli(r.found)).catch(() => setCli(false));
   }, [choice, settings]);
 
@@ -108,7 +114,7 @@ export function ProviderSetup({ status, onDone, onClose }: { status: ProviderSta
         <Field label="דגם" hint={models.length ? undefined : "Ollama לא זמין או שאין בו דגמים מותקנים (ollama pull …)"}>
           <select className="select ltr" value={model} onChange={(e) => setModel(e.target.value)}>
             <option value="">בחר דגם</option>
-            {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            {models.map((m) => <option key={m} value={m}>{ollamaOptionLabel(m, models)}</option>)}
           </select>
         </Field>
       ) : (

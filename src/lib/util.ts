@@ -166,3 +166,11 @@ export function chapterStats(chapters: { number: number | null; title: string; c
     groups: [...groups.entries()].sort((a, b) => b[1] - a[1]),
   };
 }
+
+/** Local models in the order that gave the best Hebrew in our side-by-side tests (vision + JSON,
+ *  fits a 16 GB GPU next to the OCR worker). The first one installed is suggested in the pickers. */
+export const OLLAMA_RECOMMENDED = ["gemma4:26b-a4b-it-qat", "gemma4:26b", "gemma4:12b"];
+export function recommendedOllamaModel(installed: string[]): string | null {
+  return OLLAMA_RECOMMENDED.find((m) => installed.includes(m)) ?? null;
+}
+export const ollamaOptionLabel = (m: string, installed: string[]) => (m === recommendedOllamaModel(installed) ? `${m} (מומלץ)` : m);

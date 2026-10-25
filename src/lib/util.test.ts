@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: () => "mangaimg://localhost/" }));
 
-import { arrowStep, chapterKey, chaptersInRange, chapterStats, chapterTranslationBadge, credentialStoreName, detectPlatform, imgUrl, publicationStatus, shortTitles, spreads, usd } from "./util";
+import { arrowStep, chapterKey, chaptersInRange, chapterStats, chapterTranslationBadge, credentialStoreName, detectPlatform, imgUrl, publicationStatus, recommendedOllamaModel, shortTitles, spreads, usd } from "./util";
 
 const p = (w = 100, h = 140) => ({ width: w, height: h });
 
@@ -93,5 +93,13 @@ describe("chapter versions", () => {
     expect(chaptersInRange(list, 1, 1).map((c) => c.chapter_ref)).toEqual(["a", "b"]);
     const unnumbered = [ch("p", null, null, "A"), ch("q", null, null, "B"), ch("r", null, null, "C")];
     expect(chaptersInRange(unnumbered, 2, 3).map((c) => c.chapter_ref)).toEqual(["q", "r"]);
+  });
+});
+
+describe("recommendedOllamaModel", () => {
+  it("picks the best installed model, or none", () => {
+    expect(recommendedOllamaModel(["gemma3:4b", "gemma4:12b", "gemma4:26b-a4b-it-qat"])).toBe("gemma4:26b-a4b-it-qat");
+    expect(recommendedOllamaModel(["qwen3.5:9b", "gemma4:12b"])).toBe("gemma4:12b");
+    expect(recommendedOllamaModel(["qwen3.5:9b"])).toBeNull();
   });
 });
