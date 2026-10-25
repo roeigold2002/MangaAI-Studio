@@ -3,7 +3,8 @@
 //! review. Nothing is retried on purpose: a model that breaks the JSON schema shows up as failed.
 //!
 //! Usage: cargo run --example bench_translate -- <cbz> <provider-id> <model> <pages> <lang ja|en> <out.json>
-//! MANGAAI_E2E_IMAGES=0: text only. MANGAAI_GPU_LAYERS=n: Ollama layers on the GPU. Spends provider credits for cloud providers (none for Ollama).
+//! MANGAAI_E2E_IMAGES=0: text only. MANGAAI_GPU_LAYERS=n: Ollama layers on the GPU.
+//! MANGAAI_OCR_DEVICE=cpu|cuda|auto: where the OCR/inpainting worker runs. Spends provider credits for cloud providers (none for Ollama).
 
 use std::sync::Arc;
 
@@ -43,6 +44,9 @@ async fn main() -> anyhow::Result<()> {
     s.translation.active_provider = provider_id.clone();
     s.translation.pages_per_request = 1;
     s.cloud_notice_accepted = true;
+    if let Ok(d) = std::env::var("MANGAAI_OCR_DEVICE") {
+        s.ocr.device = d;
+    }
     for p in s.translation.providers.iter_mut().filter(|p| p.id == provider_id) {
         p.model = model.clone();
         p.max_retries = 0;

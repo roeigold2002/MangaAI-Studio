@@ -175,13 +175,12 @@ Open **Translation settings**, pick a provider, and press **Test connection**.
 - **OpenAI / Gemini**: paste a key and enter a model id that supports image input if
   "send page images" is on.
 - **Ollama**: `ollama serve`, pull a model, pick it from the list. Nothing leaves the computer.
-  Hebrew quality depends heavily on the model. Best in our side-by-side tests on a 16 GB GPU:
-  `gemma4:26b-a4b-it-qat` (marked "recommended" in the picker); `gemma4:12b` is faster but makes
-  more Hebrew mistakes; models under ~9B are not usable for Hebrew. The OCR worker shares the GPU,
-  so if the model plus the worker don't fit, Windows pages VRAM and generation drops to a few
-  tokens/s. Fix: in Settings → Translation → Ollama set "GPU layers" below the model's total
-  (the app picks 23 of 31 for `gemma4:26b-a4b-it-qat` on 16 GB by itself). It then keeps a few layers on the CPU and
-  runs ~20× faster.
+  Hebrew quality depends heavily on the model. On a 16 GB GPU use `gemma4:12b` (marked
+  "recommended" in the picker): it fits fully next to the OCR worker, ~8 s/page. On 24 GB and
+  up, `gemma4:26b-a4b-it-qat` reads a bit more naturally. On 16 GB it has to keep some layers on
+  the CPU (the app works out how many by itself; 23 of 31), ~25 s/page. Models under ~9B are not
+  usable for Hebrew. If a model plus the worker overfill the GPU, Windows pages VRAM and
+  generation drops to a few tokens/s; "GPU layers" in the Ollama settings overrides the count.
 - **OpenAI-compatible**: base URL such as `http://127.0.0.1:1234/v1` (LM Studio).
 
 Before the first cloud translation you must accept the privacy notice. It explains that page text,

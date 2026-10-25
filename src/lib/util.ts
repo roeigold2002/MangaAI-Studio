@@ -167,9 +167,10 @@ export function chapterStats(chapters: { number: number | null; title: string; c
   };
 }
 
-/** Local models in the order that gave the best Hebrew in our side-by-side tests (vision + JSON,
- *  fits a 16 GB GPU next to the OCR worker). The first one installed is suggested in the pickers. */
-export const OLLAMA_RECOMMENDED = ["gemma4:26b-a4b-it-qat", "gemma4:26b", "gemma4:12b"];
+/** Local models in the order that worked best in our tests on a 16 GB GPU: gemma4:12b fits fully
+ *  next to the OCR worker (~8 s/page); the 26b reads a bit better but must spill layers to the CPU
+ *  there (~25 s/page). The first one installed is suggested in the pickers. */
+export const OLLAMA_RECOMMENDED = ["gemma4:12b", "gemma4:26b-a4b-it-qat", "gemma4:26b"];
 export function recommendedOllamaModel(installed: string[]): string | null {
   return OLLAMA_RECOMMENDED.find((m) => installed.includes(m)) ?? null;
 }

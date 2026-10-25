@@ -98,8 +98,8 @@ describe("chapter versions", () => {
 
 describe("recommendedOllamaModel", () => {
   it("picks the best installed model, or none", () => {
-    expect(recommendedOllamaModel(["gemma3:4b", "gemma4:12b", "gemma4:26b-a4b-it-qat"])).toBe("gemma4:26b-a4b-it-qat");
-    expect(recommendedOllamaModel(["qwen3.5:9b", "gemma4:12b"])).toBe("gemma4:12b");
+    expect(recommendedOllamaModel(["gemma3:4b", "gemma4:12b", "gemma4:26b-a4b-it-qat"])).toBe("gemma4:12b");
+    expect(recommendedOllamaModel(["qwen3.5:9b", "gemma4:26b-a4b-it-qat"])).toBe("gemma4:26b-a4b-it-qat");
     expect(recommendedOllamaModel(["qwen3.5:9b"])).toBeNull();
   });
 });
