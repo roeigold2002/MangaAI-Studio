@@ -113,6 +113,14 @@ def _error_code(e: Exception) -> str:
     return "worker_error"
 
 
+def _release_gpu_cache() -> None:
+    """Hand cached CUDA blocks back after each request: a local LLM (Ollama) shares the GPU,
+    and on Windows any over-commit gets paged to system RAM and slows it ~20x."""
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available() and torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+
+
 def main() -> None:
     log.info("worker ready (pid %s)", os.getpid())
     for line in sys.stdin:
@@ -131,6 +139,7 @@ def main() -> None:
             if fn is None:
                 raise ValueError(f"unknown method {method}")
             result = fn(req.get("params") or {})
+            _release_gpu_cache()
             resp = {"id": rid, "ok": True, "result": result}
         except Exception as e:  # report every failure to the caller, keep serving
             log.error("request %s failed: %s\n%s", rid, e, traceback.format_exc())

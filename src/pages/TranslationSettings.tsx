@@ -237,7 +237,7 @@ function ProviderForm({ p, hasKey, onChange, onKeySaved, dirty }: {
           </select>
         </Field>
         {p.kind === "ollama" && (
-          <Field label="שכבות על כרטיס המסך" hint="0 = אוטומטי. אם התרגום איטי מאוד, הורידו (למשל 26 ל-gemma4:26b) כדי להשאיר מקום לזיהוי הטקסט">
+          <Field label="שכבות על כרטיס המסך" hint="0 = אוטומטי. אם התרגום איטי מאוד, הורידו (למשל 23 ל-gemma4:26b) כדי להשאיר מקום לזיהוי הטקסט">
             <input className="input" type="number" min={0} max={200} value={p.gpu_layers ?? 0} onChange={(e) => onChange({ gpu_layers: Number(e.target.value) })} />
           </Field>
         )}

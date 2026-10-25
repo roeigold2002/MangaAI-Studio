@@ -180,7 +180,7 @@ Open **Translation settings**, pick a provider, and press **Test connection**.
   more Hebrew mistakes; models under ~9B are not usable for Hebrew. The OCR worker shares the GPU,
   so if the model plus the worker don't fit, Windows pages VRAM and generation drops to a few
   tokens/s. Fix: in Settings → Translation → Ollama set "GPU layers" below the model's total
-  (26 of 31 for `gemma4:26b-a4b-it-qat` on 16 GB). It then keeps a few layers on the CPU and
+  (the app picks 23 of 31 for `gemma4:26b-a4b-it-qat` on 16 GB by itself). It then keeps a few layers on the CPU and
   runs ~20× faster.
 - **OpenAI-compatible**: base URL such as `http://127.0.0.1:1234/v1` (LM Studio).
 

@@ -13,7 +13,7 @@ pub struct Ollama {
 }
 
 /// VRAM kept free for the OCR/inpainting worker, the desktop and Ollama's compute buffers.
-const WORKER_RESERVE_MIB: u64 = 3584;
+const WORKER_RESERVE_MIB: u64 = 5120;
 
 /// Layers to keep on the GPU when the model would not fit next to the worker, else None (Ollama
 /// decides). Over-committing VRAM on Windows does not fail: WDDM pages it to system RAM and
@@ -210,8 +210,8 @@ mod tests {
 
     #[test]
     fn layers_only_when_the_model_does_not_fit() {
-        // gemma4:26b QAT on a 16 GB card: measured fast at 26 layers, paged at all 31
-        assert_eq!(auto_gpu_layers(16303, 15_634_199_946, 30), Some(26));
+        // gemma4:26b QAT on a 16 GB card next to the full worker: 23 layers ~54 tok/s, 26 pages (10 min timeouts)
+        assert_eq!(auto_gpu_layers(16303, 15_634_199_946, 30), Some(23));
         assert_eq!(auto_gpu_layers(16303, 8_021_618_941, 48), None);
         assert_eq!(auto_gpu_layers(24564, 15_634_199_946, 30), None);
         assert_eq!(auto_gpu_layers(2048, 15_634_199_946, 30), None);
